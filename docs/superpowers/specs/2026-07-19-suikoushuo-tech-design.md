@@ -52,14 +52,16 @@
 | AI 服务 | Python 3.12 + FastAPI + LangGraph + langchain-openai（OpenAI 兼容协议调 DeepSeek/GLM） | 无业务状态；访谈多轮状态用 LangGraph Postgres checkpointer 存回同一个库 |
 | 数据库 | PostgreSQL 16 + pgvector 扩展 | 业务表 + 知识库向量 + LangGraph 检查点，单实例三合一 |
 | 缓存/队列 | **不引入 Redis/MQ**：验证码与频控存 Postgres；拆账号等长任务用 DB 任务表 + Java 定时轮询 | 冷启动单机原则：能用 Postgres 解决的不加中间件，扩展时再换 |
-| Embedding | 智谱 embedding-3 或 DeepSeek 兼容 embedding API | 中文效果好，免自建模型 |
+| Embedding | 智谱 embedding-3，**1024 维**（OpenAI 兼容协议） | 中文 RAG 主流选择，维度可配（此项目定 1024，精度足够且省存储）。**注意：embedding 模型与维度一经选定即绑定 pgvector 列，换模型需全库重算向量并改列定义** |
 | 短信 | 阿里云 SMS | 验证码发送；频控逻辑在 Java 侧 |
 | ASR（语音回答） | 阿里云 / 讯飞 ASR API | 定位访谈与补卡的语音输入转文字 |
 | 部署 | 单台云服务器（建议 4C8G）+ Docker Compose 四容器（nginx / java / python / postgres） | HTTPS 由 nginx + Let's Encrypt；数据库每日 `pg_dump` 上传对象存储 |
 
 ### 硬性设计原则
 
-Python 服务完全无状态、不做用户鉴权（只信任内网来源 + 服务间共享密钥 `X-Service-Token`）。所有「谁在调、扣不扣费、结果存哪」由 Java 决定；Python 只回答「给我输入，我给你 AI 产出」。
+Python **进程**无状态（可随时重启、水平扩容），不做用户鉴权（只信任内网来源 + 服务间共享密钥 `X-Service-Token`）。所有「谁在调、扣不扣费、结果存哪」由 Java 决定；Python 只回答「给我输入，我给你 AI 产出」。
+
+**「进程无状态」的准确含义**：Python 自身不在内存里长期保存会话/任务状态——需要跨请求存活的状态（访谈多轮上下文、拆账号任务进度）**一律外置到 Postgres**（LangGraph checkpointer、`analyze_task` 表），因此任何一台 Python 实例挂掉重启都不丢数据。
 
 ---
 
@@ -103,7 +105,7 @@ sks-ai/
 ### 2.3 服务间接口契约
 
 - Java → Python 全部走内网 REST。请求体自带**全部上下文**（定位档案 JSON、用户创作资料）；例外：RAG 检索由 Python 直连 pgvector 完成，Java 只传 `user_id` 与选题文本。
-- 流式接口（文案生成、访谈对话）：Python 返回 SSE，Java 用 `SseEmitter` 逐事件透传前端；**最后一个事件携带结构化结果**（完整稿件 + 引用卡片 id），Java 收到该事件才落库、确认扣费。
+- 流式接口（文案生成、访谈对话）：Python 返回 SSE，Java 用 `SseEmitter` 逐事件透传前端；**最后一个事件携带结构化结果**（完整稿件 + 引用卡片 id），Java 收到该事件才落库、确认扣费。**前端用 fetch + ReadableStream 读 SSE（非原生 `EventSource`）**——因为 `EventSource` 不支持自定义请求头，带不了 `Authorization`，fetch 流式读取可正常携带 JWT。
 - 每个请求带 `X-Request-Id`（Java 生成）串联两侧日志；带 `X-Service-Token` 共享密钥防内网误访问。
 - 拆账号长任务（约 1-3 分钟）：Java 建任务记录 → 调 Python 异步接口取 `job_id` → **Java 定时轮询** Python 任务状态接口（不用回调：回调要求 Python 理解 Java 的接口与重试语义，轮询更简单，单机内网延迟可忽略）。
 
@@ -119,15 +121,16 @@ sks-ai/
 | --- | --- |
 | `user` | 手机号唯一；基础资料 + 创作资料（行业/身份/出镜风格/周目标）直接放列，不拆表 |
 | `sms_code` | 验证码 + 过期时间 + 错误次数；频控按手机号 + 时间窗聚合查询此表，不需要 Redis |
-| `credit_account` | 每用户一行：`balance` 当前余额，仅由账本流水汇总更新 |
-| `credit_ledger` | **只追加流水账**：`+50 充值 / -1 生成 / +1 失败退回 / -10 拆账号`，每笔带 `biz_type` + `biz_id`（关联稿件或任务）；退款幂等靠 `(biz_id, type)` 唯一约束；对账、审计、纠纷全靠它 |
+| `credit_account` | 每用户一行：`balance` 当前余额。**并发扣减用原子条件更新**：`UPDATE credit_account SET balance = balance - :n WHERE user_id = :uid AND balance >= :n`，靠影响行数判断是否成功——解决 PRD §11.6「多端同时在线」下的超扣问题，无需 Redis 或分布式锁 |
+| `credit_ledger` | **只追加流水账**：`+50 充值 / -1 生成 / +1 失败退回 / -10 拆账号`，每笔带 `biz_type` + `biz_id`（关联稿件或任务）；退款幂等靠 `(biz_id, type)` 唯一约束；对账、审计、纠纷全靠它。扣减流程：同一事务内先原子扣 `credit_account` 成功、再写本表流水 |
+| `recharge_order` | **人工开通订单（商业模式核心）**：用户、套餐（50 条 / 150 条）、金额、转账备注（手机尾号）、状态(待核对/已开通/已驳回)、站长操作人、开通时间、备注凭证。支撑 PRD §11.1「转账后人工核对手机尾号」与「备注错误无法对应」的对账追溯；开通成功即写一笔 `credit_ledger(+N, biz_type=recharge, biz_id=order_id)` |
 
 **定位与知识库：**
 
 | 表 | 要点 |
 | --- | --- |
 | `positioning_profile` | 定位档案：人设/人群/差异化/变现/红线/支柱配比，存 JSONB（结构由 AI 产出、schema 会演进）；`version` 字段支持重新校准留历史 |
-| `kb_card` | 三层统一一张表：`layer`(A/B/C) + `card_type`(身份/口吻/规则/产品/FAQ/案例/爆款素材) + `title` + `content`(JSONB) + `embedding vector`；编辑卡片即时重算 embedding（PRD §7.4 立即生效） |
+| `kb_card` | 三层统一一张表：`layer`(A/B/C) + `card_type`(身份/口吻/规则/产品/FAQ/案例/爆款素材) + `title` + `content`(JSONB) + `embedding vector(1024)`（智谱 embedding-3）；编辑卡片即时重算 embedding（PRD §7.4 立即生效） |
 | `card_history` | 补卡冲突时旧值归档（PRD §11.4） |
 | `card_citation` | 稿件 ↔ 卡片引用关系；删除卡片前查引用数做二次确认；卡片删除后旧稿溯源标注「卡片已删除」 |
 
@@ -168,7 +171,8 @@ sks-ai/
 ```
 
 - **先扣后调**，宁可退款不可漏扣。
-- 同选题「重新生成 / 换角度」由 Java 判断 `topic_id` 相同则免扣（PRD §4.2）。
+- **失败判定边界**：超时、Java↔Python 连接中断、**收到部分 token 但缺末尾结构化事件**、客户端断连——**全部判失败并退款**（唯一「成功」判据是收到带完整稿件的末尾事件并落库成功）。退款靠 `(biz_id, type)` 幂等，重复触发不会多退。
+- 同选题「重新生成 / 换角度」由 Java 判断 `topic_id` 相同则免扣（PRD §4.2）。失败退款后用户重试：若稿件从未成功落库，视为该选题**首次**成功扣费；已成功过再改角度才走免费逻辑。
 - Python 全程不感知额度。
 
 ### 4.2 定位访谈（多轮对话）
@@ -185,10 +189,11 @@ Java：预检链接（调 Python 轻量预检接口：账号可访问性、视�
   → 预检失败：不扣额度，提示更换链接或手动粘贴（PRD §11.3）
   → 扣费 min(10, floor(N/2))（按比例向下取整，如 12 条扣 6），开始前明示；建 analyze_task(queued)
   → 调 Python 异步接口取 job_id，任务转 running
-Python：抓 TOP20 → 逐条转录/结构化 → 规律归纳 → 迁移建议，结果写 job 存储
-Java：@Scheduled 每 5 秒轮询 job 状态 → 进度回写 analyze_task（前端轮询 Java 显示进度条）
+Python：抓 TOP20 → 逐条转录/结构化 → 规律归纳 → 迁移建议；**进度与结果直接写 `analyze_task` 表（Python 连同一个库），不使用 Python 私有内存/落盘存储**——与「进程无状态」原则自洽，Python 重启不丢任务
+Java：@Scheduled 每 5 秒读 `analyze_task` 状态 → 前端轮询 Java 显示进度条；任务超时（如 5 分钟无进度更新）Java 判失败并按未完成比例退额度
   → done：账号画像/TOP20 清单/规律归纳/迁移建议 四层结果落库
   → 部分失败：保留已完成部分，按未完成条数比例退额度，可免费续拆（PRD §11.3）
+  → 第三方数据 API 整体不可用/限流：抓取阶段失败则全额退款，并提示改用「手动粘贴视频列表」分支（PRD §11.3）
 ```
 
 ### 4.4 复盘状态机
@@ -208,8 +213,8 @@ Java：@Scheduled 每 5 秒轮询 job 状态 → 进度回写 analyze_task（前
 
 - **统一错误码**：Java 全局异常处理器输出 `{code, message, detail}`；Python 错误由 `aiclient` 翻译成 Java 错误码，前端只认一套。
 - **LLM 调用**：每个 skill 配置超时（生成 120s、拆账号单条 60s）+ 1 次自动重试；模型 API 不可用时按 skill 配置降级到备选模型（DeepSeek ↔ GLM 互为备份）。
-- **内容安全**：命中违禁词自动重写一次，仍命中返回特定错误码，Java 走退款流程（PRD §11.2）。
-- **查重**：生成完成后 Java 对历史稿件做相似度比对，命中不阻断，稿件顶部黄色提示 + 「换角度」按钮（PRD §11.2）。
+- **内容安全**：接**阿里云内容安全**文本审核 API（已用阿里云 SMS，同厂商省对接），对 LLM 输出（及用户提交的定位素材/知识库等 UGC）过审；命中则自动重写一次，仍命中返回特定错误码、Java 走退款流程（PRD §11.2）。自建违禁词库仅作为廉价前置过滤，不替代审核 API。
+- **查重**：MVP 用**轻量文本相似**（SimHash / 关键词 Jaccard，Java 本地算，零额外成本）在同用户历史稿件内比对；命中不阻断，稿件顶部黄色提示 + 「换角度」按钮（PRD §11.2）。若日后要更准可复用 pgvector（需给 `script` 加 embedding 列、Python 侧算向量），MVP 不做。
 - **401 保内容**：前端 axios 拦截器捕获 401 时把当前表单/编辑器内容存 localStorage，重登后恢复（PRD §11.6）。
 - **全站兜底**：nginx 静态 50x 页面，展示站长微信 + 补偿承诺（PRD §11.6）。
 
@@ -237,7 +242,21 @@ Java：@Scheduled 每 5 秒轮询 job 状态 → 进度回写 analyze_task（前
 
 ---
 
-## 6. 明确不做（MVP 边界）
+## 6. 已知风险与待决事项
+
+Review 后补充，实现前需留意（含推荐默认值，可按需调整）：
+
+| 项 | 说明与推荐处理 |
+| --- | --- |
+| **JWT 即时失效** | 纯 JWT 无法主动作废，换绑手机号/封号/登出场景下旧 token 仍有效。推荐：短过期（如 2h）+ refresh token，或在 `user` 上存 `token_version`，签发时写入、校验时比对，改动即令旧 token 失效。 |
+| **生成式 AI 合规备案** | 本项目属「生成式人工智能服务」，除 ICP 备案外，可能需算法/大模型服务备案。**上线前的现实门槛**，需尽早向服务商/监管确认，别等上线才发现。 |
+| **额度账本备份粒度** | `pg_dump` 每日一次最坏丢一整天钱账。推荐对 Postgres 开 **WAL 归档做 PITR**（或额度相关表更高频备份），钱账不可只靠日备。 |
+| **单位经济性核算** | ¥0.86/条，但每次生成注入全量 A 层 + top5 B 层 + 三平台版本，token 不少；拆账号含 20 条转录 + 归纳 + 第三方 API 费。**实现前务必粗算「每次生成 / 每次拆账号」的真实 LLM+API 成本 vs 定价**，确认不亏本——直接关系商业模式成立与否。 |
+| **多模型调度成本** | 创作用 DeepSeek-V3、归纳/归因用 GLM 或 R1，需在 `llm/` 配置层按 skill 绑定模型与降级顺序，并纳入上面的成本核算。 |
+
+---
+
+## 7. 明确不做（MVP 边界）
 
 - 不引入 Redis / 消息队列 / 微服务拆分 / K8s
 - 不做在线支付（人工开通）、不做移动端适配（V1.1）、不做视频生成（V2）
