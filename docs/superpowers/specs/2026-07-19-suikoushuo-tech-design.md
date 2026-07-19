@@ -18,7 +18,9 @@
 | 数据库 | PostgreSQL 16 + pgvector（单库承载业务数据 + 向量） |
 | Agent 框架 | LangGraph |
 
-**方案 A 的核心理由：** 鉴权与额度收口在 Java 一处——「扣额度 → 调生成 → 失败退额度」这条 PRD 核心事务链在 Java 内部闭环，无跨服务对账；Python 层无状态、不对公网暴露、可随时重启；一人维护安全面与心智负担最小。代价是流式输出需 Java 做 SSE 透传（一次性成本，Spring MVC `SseEmitter` 可实现）。
+**方案 A 的核心理由：** 鉴权与额度收口在 Java 一处——「扣额度 → 调生成 → 失败退额度」这条 PRD 核心事务链在 Java 内部闭环，无跨服务对账；Python 层无状态、不对公网暴露、可随时重启；一人维护安全面与心智负担最小。
+
+**不做流式输出（重要决策）**：内容安全要求 LLM 输出**先过审核再展示**，与逐 token 流式展示存在时序矛盾（用户会先看到未审内容）。权衡后决定 MVP **放弃打字机效果**：生成完整稿 → 审核 → 一次性返回。代价是用户等待 30-60 秒（前端用进度动画/阶段提示缓解），收益是最合规 + 全链路砍掉 SSE（Java 无需透传、前端无需流式读取、失败判定大幅简化）。
 
 **被否决的备选：**
 - 方案 B（前端直连双服务）：「失败退额度」变跨服务补偿逻辑，易出对账 bug；鉴权/限流/CORS 双份，运维面翻倍。
@@ -30,12 +32,12 @@
 
 ```
 浏览器 (React SPA)
-      │ HTTPS (REST + SSE)
+      │ HTTPS (REST)
       ▼
 ┌─────────────────────┐   内网 HTTP    ┌──────────────────────┐
 │  Java 业务服务       │ ────────────▶ │  Python AI 服务       │
 │  Spring Boot 3      │ ◀──────────── │  FastAPI + LangGraph  │
-│  (唯一公网入口)       │   SSE 透传     │  (不暴露公网)          │
+│  (唯一公网入口)       │  同步 JSON     │  (不暴露公网)          │
 └─────────┬───────────┘               └──────────┬───────────┘
           │                                      │
           ▼                                      ▼
@@ -48,7 +50,7 @@
 | 层 | 选型 | 说明 |
 | --- | --- | --- |
 | 前端 | React 18 + Vite + TypeScript + Tailwind CSS | PRD §9 纸感视觉规范（#f4f1e9 / #8a5a2b / Noto Serif SC 等）落为 Tailwind 主题变量；服务端状态用 TanStack Query，客户端状态用 Zustand |
-| 业务服务 | Java 21 + Spring Boot 3.x + Spring Security (JWT) + MyBatis-Plus 或 Spring Data JPA | 登录/额度/CRUD/状态机/定时任务；SSE 透传用 Spring MVC `SseEmitter`，不引入 WebFlux |
+| 业务服务 | Java 21 + Spring Boot 3.x + Spring Security (JWT) + **MyBatis-Plus** | 登录/额度/CRUD/状态机/定时任务；无流式，纯同步 REST（长耗时接口延长超时 + 前端进度提示） |
 | AI 服务 | Python 3.12 + FastAPI + LangGraph + langchain-openai（OpenAI 兼容协议调智谱 GLM） | 无业务状态；访谈多轮状态用 LangGraph Postgres checkpointer 存回同一个库。**AI 核心栈单一厂商（智谱）：GLM 对话 + embedding-3 同平台同 key，运维最简** |
 | 数据库 | PostgreSQL 16 + pgvector 扩展 | 业务表 + 知识库向量 + LangGraph 检查点，单实例三合一 |
 | 缓存/队列 | **不引入 Redis/MQ**：验证码与频控存 Postgres；拆账号等长任务用 DB 任务表 + Java 定时轮询 | 冷启动单机原则：能用 Postgres 解决的不加中间件，扩展时再换 |
@@ -101,10 +103,13 @@ sks-server/
 ├── kb/          知识库：A/B/C 三层卡片 CRUD、补卡任务、卡片引用计数与删除保护
 ├── topic/       选题库：四路来源聚合、支柱配比排序、状态管理
 │                （热点路数据源 = TikHub 抖音热点榜接口，Java 定时拉取 → 调 Python 与知识库卡片匹配）
-├── analyze/     对标拆解：拆视频（同步）、拆账号（异步任务，见 §4.3）
+├── analyze/     对标拆解：拆视频（粘贴文案→同步；粘贴链接→走转写管线，约 1 分钟，
+│                延长超时的同步接口 + 前端进度提示）、拆账号（异步任务，见 §4.3）、扣 1 额度
 ├── script/      文案创作：生成请求编排、稿件存储、逐句编辑、查重、三平台版本
+│                （三平台版本**按需生成**：默认只生成用户主平台版，切换平台时再生成，
+│                  同选题不加扣额度——省约 2/3 生成 token 成本）
 ├── review/      发布复盘：六状态机、手动填数、归因触发、周归因卡
-├── aiclient/    对 Python 服务的 HTTP/SSE 客户端封装（唯一出口，统一超时重试与错误码翻译）
+├── aiclient/    对 Python 服务的 HTTP 客户端封装（唯一出口，统一超时重试与错误码翻译）
 └── common/      全局异常、审计日志、任务表轮询调度器（@Scheduled）
 ```
 
@@ -112,7 +117,7 @@ sks-server/
 
 ```
 sks-ai/
-├── api/                 FastAPI 路由层：每个 skill 一个 endpoint（同步 JSON 或 SSE）
+├── api/                 FastAPI 路由层：每个 skill 一个 endpoint（同步 JSON；拆账号为异步任务式）
 ├── skills/
 │   ├── interview/       定位访谈：LangGraph 多轮状态机（猜人设→确认→5-8 问→出档案）
 │   ├── script_gen/      文案生成：注入定位档案 + RAG 检索 B 层卡片 → 钩子/正文/转化分段输出
@@ -131,7 +136,7 @@ sks-ai/
 ### 2.3 服务间接口契约
 
 - Java → Python 全部走内网 REST。请求体自带**全部上下文**（定位档案 JSON、用户创作资料）；例外：RAG 检索由 Python 直连 pgvector 完成，Java 只传 `user_id` 与选题文本。
-- 流式接口（文案生成、访谈对话）：Python 返回 SSE，Java 用 `SseEmitter` 逐事件透传前端；**最后一个事件携带结构化结果**（完整稿件 + 引用卡片 id），Java 收到该事件才落库、确认扣费。**前端用 fetch + ReadableStream 读 SSE（非原生 `EventSource`）**——因为 `EventSource` 不支持自定义请求头，带不了 `Authorization`，fetch 流式读取可正常携带 JWT。
+- 生成类接口（文案生成、访谈对话）为**同步 JSON**：Python 生成完整结果 + 内容安全审核通过后一次性返回（含完整稿件 + 引用卡片 id），Java 收到才落库、确认扣费。生成期间前端展示进度动画/阶段提示（如「正在检索知识库 → 正在撰写 → 安全审核中」，由 Java 侧任务状态或前端模拟均可）。
 - 每个请求带 `X-Request-Id`（Java 生成）串联两侧日志；带 `X-Service-Token` 共享密钥防内网误访问。
 - 拆账号长任务（含 20 条音频下载 + 转写，约 3-5 分钟）：Java 建任务记录 → 调 Python 异步接口取 `job_id` → **Java 定时轮询** Python 任务状态接口（不用回调：回调要求 Python 理解 Java 的接口与重试语义，轮询更简单，单机内网延迟可忽略）。
 
@@ -148,7 +153,7 @@ sks-ai/
 | `user` | 手机号唯一；基础资料 + 创作资料（行业/身份/出镜风格/周目标）直接放列，不拆表 |
 | `sms_code` | 验证码 + 过期时间 + 错误次数；频控按手机号 + 时间窗聚合查询此表，不需要 Redis |
 | `credit_account` | 每用户一行：`balance` 当前余额。**并发扣减用原子条件更新**：`UPDATE credit_account SET balance = balance - :n WHERE user_id = :uid AND balance >= :n`，靠影响行数判断是否成功——解决 PRD §11.6「多端同时在线」下的超扣问题，无需 Redis 或分布式锁 |
-| `credit_ledger` | **只追加流水账**：`+50 充值 / -1 生成 / +1 失败退回 / -10 拆账号`，每笔带 `biz_type` + `biz_id`（关联稿件或任务）；退款幂等靠 `(biz_id, type)` 唯一约束；对账、审计、纠纷全靠它。扣减流程：同一事务内先原子扣 `credit_account` 成功、再写本表流水 |
+| `credit_ledger` | **只追加流水账**：`+50 充值 / +10 首充赠送 / -1 生成 / -1 拆视频 / -10 拆账号 / +N 失败退回`，每笔带 `biz_type` + `biz_id`（关联稿件或任务）；退款幂等靠 `(biz_id, type)` 唯一约束；对账、审计、纠纷全靠它。扣减流程：同一事务内先原子扣 `credit_account` 成功、再写本表流水。**计费规则补充（PRD 未定，本设计确定）：拆视频扣 1 额度**（与生成同价，防免费被刷） |
 | `recharge_order` | **人工开通订单（商业模式核心）**：用户、套餐（50 条 / 150 条）、金额、转账备注（手机尾号）、状态(待核对/已开通/已驳回)、站长操作人、开通时间、备注凭证。支撑 PRD §11.1「转账后人工核对手机尾号」与「备注错误无法对应」的对账追溯；开通成功即写一笔 `credit_ledger(+N, biz_type=recharge, biz_id=order_id)`；**首充额外写一笔 `+10, biz_type=bonus`（PRD 首充送 10 条体验额度）** |
 
 **定位与知识库：**
@@ -189,15 +194,15 @@ sks-ai/
 ```
 前端点「生成」
   → Java 开事务：校验余额 → 写 credit_ledger(-1, biz_id=script_id) → 更新余额 → 提交
-  → Java 调 Python SSE 生成，逐事件透传前端
-  → 成功（收到末尾结构化事件）：稿件落库，结束
+  → Java 同步调 Python 生成（Python：生成完整稿 → 内容安全审核 → 返回 JSON）
+  → 成功（收到完整结构化响应）：稿件落库，返回前端展示
   → 失败（超时/异常/内容安全二次命中）：
       写 credit_ledger(+1, biz_id=script_id, type=refund)   ← (biz_id,type) 唯一约束保证幂等
       → 前端 toast「生成失败，额度已退回」（PRD §11.2）
 ```
 
 - **先扣后调**，宁可退款不可漏扣。
-- **失败判定边界**：超时、Java↔Python 连接中断、**收到部分 token 但缺末尾结构化事件**、客户端断连——**全部判失败并退款**（唯一「成功」判据是收到带完整稿件的末尾事件并落库成功）。退款靠 `(biz_id, type)` 幂等，重复触发不会多退。
+- **失败判定边界**：超时、Java↔Python 连接中断、响应解析失败——**全部判失败并退款**（唯一「成功」判据是收到完整结构化响应并落库成功）。退款靠 `(biz_id, type)` 幂等，重复触发不会多退。客户端提交生成后断连不影响：Java 收到 Python 响应仍正常落库，用户回来能看到稿件。
 - 同选题「重新生成 / 换角度」由 Java 判断 `topic_id` 相同则免扣（PRD §4.2）。失败退款后用户重试：若稿件从未成功落库，视为该选题**首次**成功扣费；已成功过再改角度才走免费逻辑。
 - Python 全程不感知额度。
 
