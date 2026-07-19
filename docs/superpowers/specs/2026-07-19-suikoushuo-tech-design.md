@@ -63,7 +63,7 @@
 
 Python **进程**无状态（可随时重启、水平扩容），不做用户鉴权（只信任内网来源 + 服务间共享密钥 `X-Service-Token`）。所有「谁在调、扣不扣费、结果存哪」由 Java 决定；Python 只回答「给我输入，我给你 AI 产出」。
 
-**「进程无状态」的准确含义**：Python 自身不在内存里长期保存会话/任务状态——需要跨请求存活的状态（访谈多轮上下文、拆账号任务进度）**一律外置到 Postgres**（LangGraph checkpointer、`analyze_task` 表），因此任何一台 Python 实例挂掉重启都不丢数据。
+**「进程无状态」的准确含义**：Python 自身不在内存里长期保存会话/任务状态——需要跨请求存活的状态（访谈多轮上下文、异步拆解任务进度）**一律外置到 Postgres**（LangGraph checkpointer、`analyze_task` 表），因此任何一台 Python 实例挂掉重启都不丢数据。
 
 ### 模型选型（各 AI 能力用什么模型）
 
@@ -119,7 +119,7 @@ sks-server/
 
 ```
 sks-ai/
-├── api/                 FastAPI 路由层：每个 skill 一个 endpoint（同步 JSON；拆账号为异步任务式）
+├── api/                 FastAPI 路由层：每个 skill 一个 endpoint（同步 JSON；拆账号与拆视频链接版为异步任务式）
 ├── skills/
 │   ├── interview/       定位访谈：LangGraph 多轮状态机（猜人设→确认→5-8 问→出档案）
 │   ├── script_gen/      文案生成：注入定位档案 + RAG 检索 B 层卡片 → 钩子/正文/转化分段输出
@@ -137,10 +137,10 @@ sks-ai/
 
 ### 2.3 服务间接口契约
 
-- Java → Python 全部走内网 REST。请求体自带**全部上下文**（定位档案 JSON、用户创作资料）；**Python 直连数据库的例外**：① RAG 检索直连 pgvector（Java 只传 `user_id` 与选题文本）；② 定位访谈的 LangGraph checkpointer 读写会话状态；③ 拆账号任务进度/结果直写 `analyze_task` 表。这三处之外，Python 不碰业务库。
+- Java → Python 全部走内网 REST。请求体自带**全部上下文**（定位档案 JSON、用户创作资料）；**Python 直连数据库的例外**：① RAG 检索直连 pgvector（Java 只传 `user_id` 与选题文本）；② 定位访谈的 LangGraph checkpointer 读写会话状态；③ 异步拆解任务（拆账号/拆视频链接版）进度/结果直写 `analyze_task` 表。这三处之外，Python 不碰业务库。
 - **文案生成**接口为**同步 JSON**：Python 生成完整结果 + 内容安全审核通过后一次性返回（含完整稿件 + 引用卡片 id），Java 收到才落库、确认扣费。生成期间前端展示进度动画/阶段提示（如「正在检索知识库 → 正在撰写 → 安全审核中」）。**定位访谈**同为同步 JSON（一问一答，每轮一次请求），但**不涉及扣费**（PRD §4.2 校准不消耗额度）。
 - 每个请求带 `X-Request-Id`（Java 生成）串联两侧日志；带 `X-Service-Token` 共享密钥防内网误访问。
-- 拆账号长任务（含 20 条音频下载 + 转写，约 3-5 分钟）：Java 建任务记录 → 调 Python 异步接口取 `job_id` 并立即返回 → Python 后台跑并把进度/结果写 `analyze_task` 表 → **Java @Scheduled 直接读 `analyze_task` 表**推进状态（不轮询 Python 接口、不用回调：Python 已直写同一张表，Java 读表最简）。
+- 异步拆解任务（拆账号约 3-5 分钟 / 拆视频链接版约 1 分钟）：Java 建 `analyze_task` 记录 → 调 Python 异步接口**传 `task_id`**，Python 受理后立即返回 202 → Python 后台跑并把进度/结果按 `task_id` 写回 `analyze_task` 表 → **Java @Scheduled 直接读 `analyze_task` 表**推进状态（不轮询 Python 接口、不用回调、不引入独立 job_id：Python 直写同一张表，全链路只有一个任务 ID）。
 
 ---
 
@@ -217,14 +217,14 @@ sks-ai/
 
 ### 4.3 异步拆解任务（拆账号约 3-5 分钟 / 拆视频链接版约 1 分钟）
 
-**拆视频（链接版）与拆账号共用异步任务式**：Java 扣费建 `analyze_task(task_type=video)` → 调 Python 异步接口立即返回 job → Python 后台走「下载音频 → ASR 转写 → 结构化」并写回任务表 → 前端轮询进度。以下以拆账号为例（拆视频是其单条简化版）：
+**拆视频（链接版）与拆账号共用异步任务式**：Java 扣费建 `analyze_task(task_type=video)` → 调 Python 异步接口（传 `task_id`）立即返回 → Python 后台走「下载音频 → ASR 转写 → 结构化」并按 `task_id` 写回任务表 → 前端轮询进度。以下以拆账号为例（拆视频是其单条简化版）：
 
 
 ```
 Java：预检链接（调 Python 轻量预检接口：账号可访问性、视频数 N）
   → 预检失败：不扣额度，提示更换链接或手动粘贴（PRD §11.3）
   → 扣费 min(10, floor(N/2))（按比例向下取整，如 12 条扣 6），开始前明示；建 analyze_task(queued)
-  → 调 Python 异步接口取 job_id，任务转 running
+  → 调 Python 异步接口（传 task_id），受理后任务转 running
 Python：TikHub 取 TOP20 元数据与下载直链 → **逐条下载音频 → 阿里云录音文件识别转写出完整文案**（TikHub 无抖音字幕接口，转录管线是必经之路；音频临时文件转写后即删）→ 逐条结构化 → 规律归纳 → 迁移建议；**进度与结果直接写 `analyze_task` 表（Python 连同一个库），不使用 Python 私有内存/落盘存储**——与「进程无状态」原则自洽，Python 重启不丢任务
 Java：@Scheduled 每 5 秒读 `analyze_task` 状态 → 前端轮询 Java 显示进度条；任务超时（如 5 分钟无进度更新）Java 判失败并按未完成比例退额度
   → done：账号画像/TOP20 清单/规律归纳/迁移建议 四层结果落库
