@@ -39,7 +39,7 @@
 └─────────┬───────────┘               └──────────┬───────────┘
           │                                      │
           ▼                                      ▼
-   PostgreSQL 16 (+pgvector)          DeepSeek / GLM API
+   PostgreSQL 16 (+pgvector)          智谱 GLM API（对话 + embedding）
    （业务数据 + 向量 同一实例）          TikHub 第三方数据 API
 ```
 
@@ -49,7 +49,7 @@
 | --- | --- | --- |
 | 前端 | React 18 + Vite + TypeScript + Tailwind CSS | PRD §9 纸感视觉规范（#f4f1e9 / #8a5a2b / Noto Serif SC 等）落为 Tailwind 主题变量；服务端状态用 TanStack Query，客户端状态用 Zustand |
 | 业务服务 | Java 21 + Spring Boot 3.x + Spring Security (JWT) + MyBatis-Plus 或 Spring Data JPA | 登录/额度/CRUD/状态机/定时任务；SSE 透传用 Spring MVC `SseEmitter`，不引入 WebFlux |
-| AI 服务 | Python 3.12 + FastAPI + LangGraph + langchain-openai（OpenAI 兼容协议调 DeepSeek/GLM） | 无业务状态；访谈多轮状态用 LangGraph Postgres checkpointer 存回同一个库 |
+| AI 服务 | Python 3.12 + FastAPI + LangGraph + langchain-openai（OpenAI 兼容协议调智谱 GLM） | 无业务状态；访谈多轮状态用 LangGraph Postgres checkpointer 存回同一个库。**AI 核心栈单一厂商（智谱）：GLM 对话 + embedding-3 同平台同 key，运维最简** |
 | 数据库 | PostgreSQL 16 + pgvector 扩展 | 业务表 + 知识库向量 + LangGraph 检查点，单实例三合一 |
 | 缓存/队列 | **不引入 Redis/MQ**：验证码与频控存 Postgres；拆账号等长任务用 DB 任务表 + Java 定时轮询 | 冷启动单机原则：能用 Postgres 解决的不加中间件，扩展时再换 |
 | Embedding | 智谱 embedding-3，**1024 维**（OpenAI 兼容协议） | 中文 RAG 主流选择，维度可配（此项目定 1024，精度足够且省存储）。**注意：embedding 模型与维度一经选定即绑定 pgvector 列，换模型需全库重算向量并改列定义** |
@@ -65,16 +65,16 @@ Python **进程**无状态（可随时重启、水平扩容），不做用户鉴
 
 ### 模型选型（各 AI 能力用什么模型）
 
-核心原则：**便宜快的通用模型扛高频轻量任务，推理模型只用在低频高价值的归纳/归因**。按 skill 在 `llm/` 配置层绑定模型，业务代码不感知具体型号；版本号会随厂商升级，配置层单点更新。MVP **不做跨厂商自动降级**（失败退额度 + 重试已兜底）。
+**AI 核心栈统一用智谱**：所有 LLM 任务用 GLM，向量用 embedding-3——单一厂商、单一 key、单一账单，一人维护最省心。按任务在 `llm/` 配置层绑定 GLM 的不同档位（高频轻量用便宜快档、深度任务开 thinking），业务代码不感知具体型号；版本号随厂商升级时配置层单点更新。
 
 | 功能 / Skill | 任务性质 | 模型 | 理由 |
 | --- | --- | --- | --- |
-| 文案创作 `script_gen` | 中文口播口语，高频量大 | **DeepSeek-V3** | 口语质感最好，快且便宜，扛主力生成量 |
-| 定位访谈 `interview` | 多轮追问 + 归纳成档案 | **DeepSeek-V3** | 对话自然，档案走结构化输出 |
-| 补卡 `card_gen` | 大白话→结构化卡片、抽取 | **DeepSeek-V3** | 轻量抽取任务，用快模型即可 |
-| 拆视频 `video_analyze` | 结构标注 + 为什么火 | **DeepSeek-V3** | 结构标注为主的抽取任务 |
-| 拆账号规律归纳 `account_analyze` | TOP20 逐条结构化 + 全局规律归纳 | 逐条：**DeepSeek-V3**；规律归纳：**GLM-4.7（thinking）** | 逐条抽取控成本；规律归纳需全局推理 + 可靠结构化输出 |
-| 复盘归因 `attribution` | 数据→归因 + 改进建议 + 周归因卡 | **GLM-4.7（thinking）** | 因果推理 + 结构化 JSON 可靠，低频成本可接受 |
+| 文案创作 `script_gen` | 中文口播口语，高频量大 | **GLM-4.7**（thinking 关） | 中文创作 + 结构化分段（钩子/正文/转化 + 三平台版本 + 溯源）输出稳；创作不需思考链，关 thinking 更快省 |
+| 定位访谈 `interview` | 多轮追问 + 归纳成档案 | **GLM-4.7**（thinking 关） | 对话自然，档案走结构化输出 |
+| 补卡 `card_gen` | 大白话→结构化卡片、抽取 | **GLM-4.5-Air / GLM-4.7-Flash** | 轻量抽取任务，用最便宜档控成本 |
+| 拆视频 `video_analyze` | 结构标注 + 为什么火 | **GLM-4.7**（thinking 关） | 结构标注为主的抽取任务 |
+| 拆账号规律归纳 `account_analyze` | TOP20 逐条结构化 + 全局规律归纳 | 逐条：**GLM-4.5-Air**；规律归纳：**GLM-4.7（thinking 开）** | 逐条抽取用便宜档控成本；规律归纳需全局推理，开 thinking |
+| 复盘归因 `attribution` | 数据→归因 + 改进建议 + 周归因卡 | **GLM-4.7（thinking 开）** | 因果推理 + 结构化 JSON 可靠，低频成本可接受 |
 
 **配套 AI 能力（非对话模型）：**
 
@@ -84,7 +84,7 @@ Python **进程**无状态（可随时重启、水平扩容），不做用户鉴
 | 语音识别 ASR | 访谈/补卡语音转文字 | 阿里云 / 讯飞 ASR |
 | 内容安全审核 | LLM 输出 + UGC 过审 | 阿里云内容安全 |
 
-> **选 GLM-4.7 而非 DeepSeek-R1 做深度任务主力的理由**：本项目所有 AI 产出都要落 JSONB 并前端渲染，GLM 的结构化 JSON 输出/工具调用稳定性国内领先，直接减少解析失败与重试的维护负担；深度任务低频，成本差异可忽略；且与 LangGraph 编排配合更稳。若日后发现规律归纳深度不够，可单独把该 skill 切到更强推理模型（改配置一行）。
+> **为何统一用 GLM（而非混用 DeepSeek/Kimi）**：① 本项目所有 AI 产出都要落 JSONB 并前端渲染，GLM 的结构化 JSON 输出/工具调用稳定性国内领先，直接减少解析失败与重试；② GLM 与 embedding-3 同属智谱，AI 栈单厂商单 key，一人运维最省；③ 与 LangGraph 编排配合稳；④ Kimi 的超长上下文优势本项目用不到（拆账号 TOP20 合计仅一两万字，128K 足够）。**待验证点**：文案创作是北极星 skill，上线前用「评测用例集」盲评确认 GLM-4.7 的口语质感达标；若不足，该 skill 可单独切换模型（改配置一行）。
 
 ---
 
@@ -120,8 +120,8 @@ sks-ai/
 │   ├── attribution/     复盘归因：单条归因 + 周归因卡
 │   └── card_gen/        补卡：大白话 → 结构化卡片、缺口检测、冲突检测
 ├── rag/                 embedding 调用、pgvector 检索、引用溯源（返回所用卡片 id 列表）
-├── llm/                 按 skill 配置模型（创作/访谈/补卡/拆视频结构化→DeepSeek-V3 口语质感；
-│                        拆账号规律归纳/复盘归因→GLM-4.7 thinking），OpenAI 兼容协议统一封装
+├── llm/                 统一调智谱 GLM，按 skill 绑定档位（高频创作类→GLM-4.7 thinking 关；
+│                        轻量抽取→GLM-4.5-Air；深度归纳/归因→GLM-4.7 thinking 开），OpenAI 兼容协议统一封装
 └── datasource/          TikHub 第三方 API 客户端（账号主页、视频列表、文案提取）
 ```
 
@@ -275,7 +275,8 @@ Review 后补充，实现前需留意（含推荐默认值，可按需调整）�
 | **生成式 AI 合规备案** | 本项目属「生成式人工智能服务」，除 ICP 备案外，可能需算法/大模型服务备案。**上线前的现实门槛**，需尽早向服务商/监管确认，别等上线才发现。 |
 | **额度账本备份粒度** | `pg_dump` 每日一次最坏丢一整天钱账。推荐对 Postgres 开 **WAL 归档做 PITR**（或额度相关表更高频备份），钱账不可只靠日备。 |
 | **单位经济性核算** | ¥0.86/条，但每次生成注入全量 A 层 + top5 B 层 + 三平台版本，token 不少；拆账号含 20 条转录 + 归纳 + 第三方 API 费。**实现前务必粗算「每次生成 / 每次拆账号」的真实 LLM+API 成本 vs 定价**，确认不亏本——直接关系商业模式成立与否。 |
-| **多模型调度成本** | 创作/访谈/补卡/拆视频用 DeepSeek-V3，拆账号规律归纳/复盘归因用 GLM-4.7(thinking)，在 `llm/` 配置层按 skill 绑定模型（不做跨厂商自动降级），并纳入上面的成本核算。 |
+| **GLM 档位与成本** | 统一用 GLM，但按 skill 分档：高频创作类 GLM-4.7（thinking 关）、轻量抽取 GLM-4.5-Air、深度任务 GLM-4.7（thinking 开）。在 `llm/` 配置层绑定，并纳入上面的成本核算。 |
+| **文案创作口语质感（北极星）** | `script_gen` 起步用 GLM-4.7，上线前必须用「评测用例集」盲评确认口语质感达标——这是采用率的命门；若不达标，该 skill 单独切换模型（架构支持改一行配置）。 |
 
 ---
 
