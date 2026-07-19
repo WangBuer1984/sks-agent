@@ -130,9 +130,11 @@ sks-server/
 ```
 sks-ai/
 ├── api/                 FastAPI 路由层：每个 skill 一个 endpoint（同步 JSON；拆账号与拆视频链接版为异步任务式）
+│                        含 asr 路由（一句话识别，访谈/补卡语音回答转文字）
 ├── skills/
 │   ├── interview/       定位访谈：LangGraph 多轮状态机（猜人设→确认→5-8 问→出档案）
-│   ├── script_gen/      文案生成：注入定位档案 + RAG 检索 B 层卡片 → 钩子/正文/转化分段输出
+│   ├── script_gen/      文案生成：注入定位档案 + RAG 检索 B 层卡片 → 钩子/正文/转化逐句输出；
+│   │                    含单句重写 rewrite（「这句换个说法」，轻量档、不扣额度）
 │   ├── video_analyze/   拆视频：结构标注、为什么火、可复用框架、人设差异提醒
 │   ├── account_analyze/ 拆账号：第三方 API 抓 TOP20 → 逐条结构化 → 规律归纳 → 迁移建议
 │   ├── attribution/     复盘归因：单条归因 + 周归因卡

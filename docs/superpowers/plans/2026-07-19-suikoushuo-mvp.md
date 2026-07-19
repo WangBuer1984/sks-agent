@@ -843,8 +843,8 @@ git commit -m "feat: knowledge base CRUD (embedding sync, citation-guarded delet
 
 **Files:**
 - Create: `sks-ai/app/rag/retrieve.py`
-- Create: `sks-ai/app/skills/script_gen/__init__.py`、`sks-ai/app/skills/script_gen/graph.py`
-- Create: `sks-ai/app/api/script_gen.py`
+- Create: `sks-ai/app/skills/script_gen/__init__.py`、`sks-ai/app/skills/script_gen/graph.py`、`sks-ai/app/skills/script_gen/rewrite.py`（单句重写，复用 `llm.chat(skill="rewrite_sentence")` + `safety.check`）
+- Create: `sks-ai/app/api/script_gen.py`（挂 `/ai/script_gen` 与 `/ai/rewrite_sentence` 两个路由）
 - Modify: `sks-ai/app/main.py`（挂路由）
 - Test: `sks-ai/tests/test_script_gen.py`、`sks-ai/tests/test_retrieve.py`
 
@@ -1268,7 +1268,7 @@ git commit -m "feat: analyze orchestration (async task polling + proportional re
 
 # P4 · 发布复盘状态机 + 周归因
 
-**阶段目标：** 稿件六状态机流转（draft/pending/tracking/hot/plain/flop/rejected）由 Java 规则判定（无 AI 判态）；手填播放量后按阈值判 hot/plain/flop；爆款出 C 层卡与续集选题、flop 看归因、rejected 回访反哺；周日定时聚合周归因卡。
+**阶段目标：** 稿件七状态机流转（draft/pending/tracking/hot/plain/flop/rejected；另有 generating/failed 两个生成期前置态不参与复盘流转）由 Java 规则判定（无 AI 判态）；手填播放量后按阈值判 hot/plain/flop；爆款出 C 层卡与续集选题、flop 看归因、rejected 回访反哺；周日定时聚合周归因卡。
 
 **依赖：** P1（script、topic、kb C 层卡、attribution skill 需补）、P3（可选）。
 
