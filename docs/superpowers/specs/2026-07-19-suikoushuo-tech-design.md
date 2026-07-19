@@ -105,8 +105,8 @@ sks-server/
 │                （热点路数据源 = TikHub 抖音热点榜接口，Java 定时拉取 → 调 Python 与知识库卡片匹配。
 │                 **MVP 决策：热点路提前纳入**——TikHub 热点榜接口现成、成本低；这与 PRD 列 V1.1 的
 │                 「热点监控推送」不同，后者指主动 push 通知，仍留 V1.1。发布复盘的播放量自动抓取也仍留 V1.1）
-├── analyze/     对标拆解：拆视频（粘贴文案→同步；粘贴链接→走转写管线，约 1 分钟，
-│                延长超时的同步接口 + 前端进度提示）、拆账号（异步任务，见 §4.3）、扣 1 额度
+├── analyze/     对标拆解：拆视频（粘贴文案→同步，仅 LLM 约 10-20s；粘贴链接→**异步任务**，
+│                走转写管线约 1 分钟）、拆账号（异步任务，见 §4.3）；均扣 1 / 10 额度
 ├── script/      文案创作：生成请求编排、稿件存储、逐句编辑、查重、三平台版本
 │                （三平台版本**按需生成**：默认只生成用户主平台版，切换平台时再生成，
 │                  同选题不加扣额度——省约 2/3 生成 token 成本）
@@ -173,8 +173,8 @@ sks-ai/
 | --- | --- |
 | `topic` | 四路来源（`source`: hot/faq/benchmark/replay）+ 依据说明 + 内容支柱标签 |
 | `script` | 稿件：钩子/正文/转化三段 JSONB（含逐句结构，支持逐句改）、平台版本、`review_state`（六状态机字段就在稿件上，不单独建表）、发布链接、播放数据（手填）、`data_source`(manual/auto) |
-| `analyze_task` | 拆账号任务：状态(queued/running/partial/done/failed)、进度、实扣额度；存**账号画像 / 规律归纳 / 迁移建议**三层产出 JSONB（TOP20 明细不放这里，见下行） |
-| `benchmark_video` | 拆出的 **TOP20 明细（一条一行，非 JSONB）**：标题/播放/收藏/完整文案/结构标注；每条要独立「深拆 / 仿写」，故必须建行。关联 `analyze_task_id` |
+| `analyze_task` | **异步拆解任务通用表**：`task_type`(account 拆账号 / video 拆视频链接版) + 状态(queued/running/partial/done/failed) + 进度 + 实扣额度 + 产出 JSONB。拆账号存账号画像/规律归纳/迁移建议三层（TOP20 明细见下行）；拆视频存单条结构标注/为什么火/框架/差异提醒 |
+| `benchmark_video` | 拆账号拆出的 **TOP20 明细（一条一行，非 JSONB）**：标题/播放/收藏/完整文案/结构标注；每条要独立「深拆 / 仿写」，故必须建行。关联 `analyze_task_id` |
 | `weekly_report` | 周归因卡 |
 
 **取舍说明：** AI 产出（档案、拆解结果、稿件分段）一律 JSONB 而非拆关系表——这些结构由 prompt 决定、迭代频繁，JSONB 免去反复迁移；需要查询/索引的字段（状态、来源、层级）才提列。复盘状态机不建独立表，`script.review_state` + 状态变迁审计日志即可。
@@ -215,7 +215,10 @@ sks-ai/
 - 语音回答：前端录音 → Java 转发 → Python 调 ASR 转文字后进入同一流程。
 - 档案确认生效：Python 返回结构化档案 + 自动拆出的 A 层卡片，Java 一并落库。
 
-### 4.3 拆账号（长任务，约 3-5 分钟）
+### 4.3 异步拆解任务（拆账号约 3-5 分钟 / 拆视频链接版约 1 分钟）
+
+**拆视频（链接版）与拆账号共用异步任务式**：Java 扣费建 `analyze_task(task_type=video)` → 调 Python 异步接口立即返回 job → Python 后台走「下载音频 → ASR 转写 → 结构化」并写回任务表 → 前端轮询进度。以下以拆账号为例（拆视频是其单条简化版）：
+
 
 ```
 Java：预检链接（调 Python 轻量预检接口：账号可访问性、视频数 N）
@@ -260,7 +263,7 @@ Java：@Scheduled 每 5 秒读 `analyze_task` 状态 → 前端轮询 Java 显�
 ### 5.3 部署与运维
 
 - Docker Compose 四容器：`nginx`（HTTPS 终结 + 静态前端 + 反代）、`sks-server`、`sks-ai`、`postgres`；服务器 4C8G。
-- **同步长等待接口的超时**：文案生成同步等 30-60s、拆视频等约 1 分钟，需把 nginx `proxy_read_timeout`、Java→Python HTTP client 超时统一调到 ≥150s，否则会在网关/客户端层先超时；拆账号是异步任务式（立即返回 job，前端轮询），不受此限。
+- **同步接口超时**：唯一较长的同步接口是文案生成（等 30-60s），需把 nginx `proxy_read_timeout`、Java→Python HTTP client 超时调到 ≥90s；拆账号与拆视频（链接版）都是异步任务式（立即返回 job、前端轮询），不占用长连接。
 - 配置管理：`.env` 注入（数据库密码、模型 API key、TikHub key、短信 key、服务间共享密钥）；**密钥不进 git**。
 - 日志：两服务 JSON 日志落盘 + `X-Request-Id` 串联；先不上日志系统。
 - 备份：每日 `pg_dump` → 对象存储（OSS/COS），保留 30 天——额度账本不可丢。
