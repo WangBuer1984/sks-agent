@@ -12,7 +12,7 @@
 | --- | --- |
 | 团队 | 独立开发者一人全栈开发 + 运维 |
 | 规模与部署 | 冷启动阶段（百位用户以内），单台国内云服务器 |
-| 拆账号数据源 | 付费第三方数据 API（TikHub 类服务），成本计入拆账号定价 |
+| 拆账号数据源 | 付费第三方数据 API（**TikHub**），成本计入拆账号定价 |
 | 服务架构 | Java 业务层 + Python AI 层，双服务；**Java 做唯一公网入口**（方案 A） |
 | 前端 | React 18 + Vite + TypeScript |
 | 数据库 | PostgreSQL 16 + pgvector（单库承载业务数据 + 向量） |
@@ -40,7 +40,7 @@
           │                                      │
           ▼                                      ▼
    PostgreSQL 16 (+pgvector)          DeepSeek / GLM API
-   （业务数据 + 向量 同一实例）          TikHub 类第三方数据 API
+   （业务数据 + 向量 同一实例）          TikHub 第三方数据 API
 ```
 
 ### 技术栈清单
@@ -99,7 +99,7 @@ sks-ai/
 ├── rag/                 embedding 调用、pgvector 检索、引用溯源（返回所用卡片 id 列表）
 ├── llm/                 多模型调度：按 skill 配置模型（创作→DeepSeek-V3 口语质感，
 │                        归纳/归因→GLM 或 DeepSeek-R1），OpenAI 兼容协议统一封装，互为降级备份
-└── datasource/          TikHub 类第三方 API 客户端（账号主页、视频列表、文案提取）
+└── datasource/          TikHub 第三方 API 客户端（账号主页、视频列表、文案提取）
 ```
 
 ### 2.3 服务间接口契约
