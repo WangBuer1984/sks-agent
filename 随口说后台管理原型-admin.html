@@ -80,8 +80,6 @@
   .btn-primary:hover { background: #6e4620; }
   .btn-ghost { background: #fff; color: #8a5a2b; border: 1px solid #d8c9b2; }
   .btn-ghost:hover { background: #f7f2e7; }
-  .btn-danger-ghost { background: #fff; color: #b0492f; border: 1px solid #e4b9ab; }
-  .btn-danger-ghost:hover { background: #faf0ec; }
   .btn-green { background: #4a8c5c; color: #fff; }
   .btn-green:hover { background: #3c744c; }
   .btn:disabled { opacity: 0.45; cursor: not-allowed; }
@@ -141,17 +139,14 @@
   td { padding: 12px 10px; border-bottom: 1px solid #f0ece0; vertical-align: middle; }
   tr:last-child td { border-bottom: none; }
   .st { font-size: 11px; font-weight: 700; padding: 2.5px 9px; border-radius: 4px; display: inline-block; }
-  .st.pending  { background: #fdf3e4; color: #a8712e; border: 1px solid #ecd4ae; }
-  .st.done     { background: #edf5ef; color: #4a8c5c; border: 1px solid #c4dcc9; }
-  .st.rejected { background: #faf0ec; color: #b0492f; border: 1px solid #e4b9ab; }
+  .st.trial { background: #fdf3e4; color: #a8712e; border: 1px solid #ecd4ae; }
+  .st.done  { background: #edf5ef; color: #4a8c5c; border: 1px solid #c4dcc9; }
   .row-actions { display: flex; gap: 6px; }
   .mini-btn {
     font-size: 11.5px; font-weight: 700; padding: 5px 12px; border-radius: 6px; cursor: pointer; border: none; font-family: inherit;
   }
   .mini-open { background: #8a5a2b; color: #fff; }
   .mini-open:hover { background: #6e4620; }
-  .mini-reject { background: #fff; color: #b0492f; border: 1px solid #e4b9ab; }
-  .mini-reject:hover { background: #faf0ec; }
   .mono { font-variant-numeric: tabular-nums; color: #6b6558; }
 
   /* ── 弹窗 / toast ───────────────────────── */
@@ -183,7 +178,7 @@
       <div class="name serif">随口说 · 站长后台</div>
       <div class="sub">ADMIN CONSOLE</div>
     </div>
-    <div class="nav-item active">⚡ 开通额度<span class="badge" id="navBadge">2</span></div>
+    <div class="nav-item active">⚡ 开通额度<span class="badge" id="navBadge">1</span></div>
     <div class="nav-item" onclick="toast('原型仅演示「开通额度」页')">📋 订单记录</div>
     <div class="nav-item" onclick="toast('原型仅演示「开通额度」页')">👤 用户查询</div>
     <div class="nav-item" onclick="toast('原型仅演示「开通额度」页')">🎁 补偿额度</div>
@@ -197,14 +192,14 @@
   <!-- ── 主区 ── -->
   <main class="main">
     <div class="page-title serif">人工开通额度</div>
-    <div class="page-desc">用户微信转账后备注手机尾号 → 在此核对开通。无法核对的转账<strong style="color:#b0492f">不默认入账</strong>，先驳回并微信询问（PRD §11.1）。</div>
+    <div class="page-desc">用户注册即自动创建订单（状态「免费体验」）。用户微信转账并备注手机尾号后 → 在此核对开通。无法核对的转账<strong style="color:#b0492f">不默认入账</strong>，按微信聊天记录主动询问（PRD §11.1）。</div>
 
     <!-- 统计 -->
     <div class="stats">
-      <div class="stat-card"><div class="label">待核对</div><div class="value warn" id="statPending">2</div><div class="hint">超 10 分钟未处理会标红</div></div>
-      <div class="stat-card"><div class="label">今日已开通</div><div class="value ok" id="statDone">3</div><div class="hint">最近一笔 17:02</div></div>
-      <div class="stat-card"><div class="label">今日充值金额</div><div class="value" id="statAmount">¥227</div><div class="hint">50条×1 · 150条×1 + 补差</div></div>
-      <div class="stat-card"><div class="label">今日首充（送10条）</div><div class="value">2</div><div class="hint">拆账号占首充 50%</div></div>
+      <div class="stat-card"><div class="label">免费体验中</div><div class="value warn" id="statPending">1</div><div class="hint">注册未充值，待转化</div></div>
+      <div class="stat-card"><div class="label">今日已开通</div><div class="value ok" id="statDone">2</div><div class="hint">最近一笔 17:02</div></div>
+      <div class="stat-card"><div class="label">今日充值金额</div><div class="value" id="statAmount">¥178</div><div class="hint">150条×1 · 50条×1</div></div>
+      <div class="stat-card"><div class="label">今日首充（送10条）</div><div class="value">1</div><div class="hint">拆账号占首充 100%</div></div>
     </div>
 
     <!-- ── 快速开通 ── -->
@@ -249,12 +244,11 @@
     <!-- ── 订单记录 ── -->
     <div class="card">
       <div class="card-title">开通订单记录</div>
-      <div class="card-sub">对账、审计、纠纷追溯全靠这张表；「待核对」为用户在开通引导页点了「我已转账」自动创建的登记单</div>
+      <div class="card-sub">对账、审计、纠纷追溯全靠这张表；「免费体验」为用户注册时自动创建的订单，转账核对后开通转为「已开通」</div>
       <div class="filter-tabs">
         <div class="ftab on" data-f="all" onclick="setFilter('all', this)">全部</div>
-        <div class="ftab" data-f="pending" onclick="setFilter('pending', this)">待核对</div>
+        <div class="ftab" data-f="trial" onclick="setFilter('trial', this)">免费体验</div>
         <div class="ftab" data-f="done" onclick="setFilter('done', this)">已开通</div>
-        <div class="ftab" data-f="rejected" onclick="setFilter('rejected', this)">已驳回</div>
       </div>
       <table>
         <thead><tr>
@@ -278,21 +272,6 @@
   </div>
 </div>
 
-<!-- 驳回弹窗 -->
-<div class="overlay" id="ovReject">
-  <div class="modal">
-    <h3>驳回登记单</h3>
-    <div class="m-body">
-      无法核对的转账<strong style="color:#b0492f">不默认入账</strong>。驳回后请按微信聊天记录联系用户确认（PRD §11.1）。
-      <textarea id="rejectReason" placeholder="驳回原因，如：备注尾号 6688 无匹配用户 / 金额与套餐不符，已微信询问"></textarea>
-    </div>
-    <div class="m-actions">
-      <button class="btn btn-ghost" onclick="hide('ovReject')">取消</button>
-      <button class="btn btn-danger-ghost" onclick="doReject()">确认驳回</button>
-    </div>
-  </div>
-</div>
-
 <div id="toast"></div>
 
 <script>
@@ -304,15 +283,13 @@ const users = [
 ];
 
 let orders = [
-  { time: '今天 17:20', user: '—（备注 9027 无匹配）', tail: '9027', pkg: '—', amount: 49,  first: '—', state: 'pending',  op: '待处理' },
-  { time: '今天 17:11', user: '律师说家事 137****3355', tail: '3355', pkg: '50 条', amount: 49, first: '是', state: 'pending', op: '待处理' },
+  { time: '今天 17:11', user: '律师说家事 137****3355', tail: '3355', pkg: '—', amount: 0, first: '—', state: 'trial', op: '注册自动创建' },
   { time: '今天 17:02', user: '海棠餐饮小雪 159****6688', tail: '6688', pkg: '150 条', amount: 129, first: '是', state: 'done', op: '站长 · 短信已发' },
   { time: '今天 15:40', user: '装修避坑老张 138****6688', tail: '6688', pkg: '50 条', amount: 49, first: '否', state: 'done', op: '站长 · 短信已发' },
-  { time: '今天 11:26', user: '—（无备注）', tail: '—', pkg: '—', amount: 49, first: '—', state: 'rejected', op: '站长 · 无备注无法核对，已微信询问' },
   { time: '昨天 21:15', user: '装修避坑老张 138****6688', tail: '6688', pkg: '补偿 +5', amount: 0, first: '—', state: 'done', op: '站长 · 7/18 服务不可用补偿' },
 ];
 
-let selUser = null, selPkg = null, curFilter = 'all', rejectIdx = -1;
+let selUser = null, selPkg = null, curFilter = 'all';
 
 /* ── 搜索与选择 ───────────────────────── */
 function searchTail() {
@@ -325,7 +302,7 @@ function searchTail() {
   if (!tail) { toast('先输入转账备注的手机尾号'); return; }
   const hits = users.filter(u => u.tail.endsWith(tail) || u.phone.replace(/\D/g,'').endsWith(tail));
   if (hits.length === 0) {
-    area.innerHTML = '<div class="warn-box">尾号「' + tail + '」未匹配到任何用户。<strong>不要默认入账</strong>——请按微信聊天记录核对，或驳回登记单后主动询问用户。</div>';
+    area.innerHTML = '<div class="warn-box">尾号「' + tail + '」未匹配到任何用户。<strong>不要默认入账</strong>——请按微信聊天记录人工核对，主动询问用户后再操作。</div>';
     return;
   }
   setStep(2);
@@ -385,11 +362,14 @@ function openConfirm() {
 function doOpen() {
   hide('ovConfirm');
   const now = new Date(), hm = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
-  orders.unshift({
+  const record = {
     time: '今天 ' + hm, user: selUser.name + ' ' + selUser.phone, tail: selUser.tail,
     pkg: selPkg + ' 条', amount: selPkg === 50 ? 49 : 129,
     first: selUser.firstCharge ? '是' : '否', state: 'done', op: '站长 · 短信已发',
-  });
+  };
+  // 首充：把该用户注册时创建的「免费体验」订单转为已开通；复购则新增订单记录
+  const trialIdx = orders.findIndex(o => o.state === 'trial' && o.user.includes(selUser.phone));
+  if (trialIdx >= 0) orders[trialIdx] = record; else orders.unshift(record);
   selUser.balance += selPkg + (selUser.firstCharge ? 10 : 0);
   const bonusMsg = selUser.firstCharge ? '（含首充赠送 10 条）' : '';
   selUser.firstCharge = false;
@@ -418,16 +398,15 @@ function setFilter(f, el) {
 }
 
 function renderOrders() {
-  const stMap = { pending: ['待核对','pending'], done: ['已开通','done'], rejected: ['已驳回','rejected'] };
+  const stMap = { trial: ['免费体验','trial'], done: ['已开通','done'] };
   const rows = orders
     .map((o, i) => ({ o, i }))
     .filter(({o}) => curFilter === 'all' || o.state === curFilter)
     .map(({o, i}) => {
       const [label, cls] = stMap[o.state];
-      const actions = o.state === 'pending'
+      const actions = o.state === 'trial'
         ? `<div class="row-actions">
              <button class="mini-btn mini-open" onclick="quickFill(${i})">去开通</button>
-             <button class="mini-btn mini-reject" onclick="askReject(${i})">驳回</button>
            </div>`
         : '<span style="color:#c9c3b2">—</span>';
       return `<tr>
@@ -438,26 +417,18 @@ function renderOrders() {
       </tr>`;
     }).join('');
   document.getElementById('orderBody').innerHTML = rows || '<tr><td colspan="8" class="empty-hint">该状态下暂无订单</td></tr>';
-  const pending = orders.filter(o => o.state === 'pending').length;
-  document.getElementById('statPending').textContent = pending;
-  document.getElementById('navBadge').textContent = pending;
-  document.getElementById('navBadge').style.display = pending ? '' : 'none';
+  const trial = orders.filter(o => o.state === 'trial').length;
+  document.getElementById('statPending').textContent = trial;
+  document.getElementById('navBadge').textContent = trial;
+  document.getElementById('navBadge').style.display = trial ? '' : 'none';
 }
 
 function quickFill(i) {
   const o = orders[i];
-  if (o.tail === '—') { toast('该登记单无备注尾号，请先微信核对'); return; }
   document.getElementById('tailInput').value = o.tail;
   window.scrollTo({ top: 0, behavior: 'smooth' });
   searchTail();
-  toast('已按登记单尾号 ' + o.tail + ' 搜索，请确认用户后开通');
-}
-
-function askReject(i) { rejectIdx = i; document.getElementById('rejectReason').value = ''; show('ovReject'); }
-function doReject() {
-  const reason = document.getElementById('rejectReason').value.trim() || '无法核对，已微信询问';
-  orders[rejectIdx] = { ...orders[rejectIdx], state: 'rejected', op: '站长 · ' + reason };
-  hide('ovReject'); toast('已驳回，记得微信联系用户确认'); renderOrders();
+  toast('已按订单尾号 ' + o.tail + ' 搜索，请确认用户后开通');
 }
 
 /* ── 通用 ───────────────────────── */
