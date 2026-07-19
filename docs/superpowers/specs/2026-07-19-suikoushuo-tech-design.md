@@ -102,7 +102,9 @@ sks-server/
 ├── profile/     账号定位：校准会话入口、定位档案 CRUD、校准进度保存
 ├── kb/          知识库：A/B/C 三层卡片 CRUD、补卡任务、卡片引用计数与删除保护
 ├── topic/       选题库：四路来源聚合、支柱配比排序、状态管理
-│                （热点路数据源 = TikHub 抖音热点榜接口，Java 定时拉取 → 调 Python 与知识库卡片匹配）
+│                （热点路数据源 = TikHub 抖音热点榜接口，Java 定时拉取 → 调 Python 与知识库卡片匹配。
+│                 **MVP 决策：热点路提前纳入**——TikHub 热点榜接口现成、成本低；这与 PRD 列 V1.1 的
+│                 「热点监控推送」不同，后者指主动 push 通知，仍留 V1.1。发布复盘的播放量自动抓取也仍留 V1.1）
 ├── analyze/     对标拆解：拆视频（粘贴文案→同步；粘贴链接→走转写管线，约 1 分钟，
 │                延长超时的同步接口 + 前端进度提示）、拆账号（异步任务，见 §4.3）、扣 1 额度
 ├── script/      文案创作：生成请求编排、稿件存储、逐句编辑、查重、三平台版本
@@ -135,10 +137,10 @@ sks-ai/
 
 ### 2.3 服务间接口契约
 
-- Java → Python 全部走内网 REST。请求体自带**全部上下文**（定位档案 JSON、用户创作资料）；例外：RAG 检索由 Python 直连 pgvector 完成，Java 只传 `user_id` 与选题文本。
-- 生成类接口（文案生成、访谈对话）为**同步 JSON**：Python 生成完整结果 + 内容安全审核通过后一次性返回（含完整稿件 + 引用卡片 id），Java 收到才落库、确认扣费。生成期间前端展示进度动画/阶段提示（如「正在检索知识库 → 正在撰写 → 安全审核中」，由 Java 侧任务状态或前端模拟均可）。
+- Java → Python 全部走内网 REST。请求体自带**全部上下文**（定位档案 JSON、用户创作资料）；**Python 直连数据库的例外**：① RAG 检索直连 pgvector（Java 只传 `user_id` 与选题文本）；② 定位访谈的 LangGraph checkpointer 读写会话状态；③ 拆账号任务进度/结果直写 `analyze_task` 表。这三处之外，Python 不碰业务库。
+- **文案生成**接口为**同步 JSON**：Python 生成完整结果 + 内容安全审核通过后一次性返回（含完整稿件 + 引用卡片 id），Java 收到才落库、确认扣费。生成期间前端展示进度动画/阶段提示（如「正在检索知识库 → 正在撰写 → 安全审核中」）。**定位访谈**同为同步 JSON（一问一答，每轮一次请求），但**不涉及扣费**（PRD §4.2 校准不消耗额度）。
 - 每个请求带 `X-Request-Id`（Java 生成）串联两侧日志；带 `X-Service-Token` 共享密钥防内网误访问。
-- 拆账号长任务（含 20 条音频下载 + 转写，约 3-5 分钟）：Java 建任务记录 → 调 Python 异步接口取 `job_id` → **Java 定时轮询** Python 任务状态接口（不用回调：回调要求 Python 理解 Java 的接口与重试语义，轮询更简单，单机内网延迟可忽略）。
+- 拆账号长任务（含 20 条音频下载 + 转写，约 3-5 分钟）：Java 建任务记录 → 调 Python 异步接口取 `job_id` 并立即返回 → Python 后台跑并把进度/结果写 `analyze_task` 表 → **Java @Scheduled 直接读 `analyze_task` 表**推进状态（不轮询 Python 接口、不用回调：Python 已直写同一张表，Java 读表最简）。
 
 ---
 
@@ -171,8 +173,8 @@ sks-ai/
 | --- | --- |
 | `topic` | 四路来源（`source`: hot/faq/benchmark/replay）+ 依据说明 + 内容支柱标签 |
 | `script` | 稿件：钩子/正文/转化三段 JSONB（含逐句结构，支持逐句改）、平台版本、`review_state`（六状态机字段就在稿件上，不单独建表）、发布链接、播放数据（手填）、`data_source`(manual/auto) |
-| `analyze_task` | 拆账号任务：状态(queued/running/partial/done/failed)、进度、实扣额度；四层产出存 JSONB |
-| `benchmark_video` | 拆出的 TOP20 明细，每条可独立「深拆 / 仿写」 |
+| `analyze_task` | 拆账号任务：状态(queued/running/partial/done/failed)、进度、实扣额度；存**账号画像 / 规律归纳 / 迁移建议**三层产出 JSONB（TOP20 明细不放这里，见下行） |
+| `benchmark_video` | 拆出的 **TOP20 明细（一条一行，非 JSONB）**：标题/播放/收藏/完整文案/结构标注；每条要独立「深拆 / 仿写」，故必须建行。关联 `analyze_task_id` |
 | `weekly_report` | 周归因卡 |
 
 **取舍说明：** AI 产出（档案、拆解结果、稿件分段）一律 JSONB 而非拆关系表——这些结构由 prompt 决定、迭代频繁，JSONB 免去反复迁移；需要查询/索引的字段（状态、来源、层级）才提列。复盘状态机不建独立表，`script.review_state` + 状态变迁审计日志即可。
@@ -258,6 +260,7 @@ Java：@Scheduled 每 5 秒读 `analyze_task` 状态 → 前端轮询 Java 显�
 ### 5.3 部署与运维
 
 - Docker Compose 四容器：`nginx`（HTTPS 终结 + 静态前端 + 反代）、`sks-server`、`sks-ai`、`postgres`；服务器 4C8G。
+- **同步长等待接口的超时**：文案生成同步等 30-60s、拆视频等约 1 分钟，需把 nginx `proxy_read_timeout`、Java→Python HTTP client 超时统一调到 ≥150s，否则会在网关/客户端层先超时；拆账号是异步任务式（立即返回 job，前端轮询），不受此限。
 - 配置管理：`.env` 注入（数据库密码、模型 API key、TikHub key、短信 key、服务间共享密钥）；**密钥不进 git**。
 - 日志：两服务 JSON 日志落盘 + `X-Request-Id` 串联；先不上日志系统。
 - 备份：每日 `pg_dump` → 对象存储（OSS/COS），保留 30 天——额度账本不可丢。
