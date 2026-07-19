@@ -67,11 +67,11 @@
   .flow-steps .arrow { margin: 0 12px; color: #d8d2c4; }
 
   .search-row { display: flex; gap: 10px; }
-  input[type="text"], textarea, select {
+  input[type="text"], input[type="password"], textarea, select {
     border: 1px solid #d8d2c4; border-radius: 8px; padding: 11px 14px; font-size: 14px;
     background: #fdfcf8; color: #23231f; outline: none; font-family: inherit;
   }
-  input[type="text"]:focus, textarea:focus { border-color: #8a5a2b; }
+  input[type="text"]:focus, input[type="password"]:focus, textarea:focus { border-color: #8a5a2b; }
   .btn {
     border: none; border-radius: 8px; padding: 11px 22px; font-size: 13.5px; font-weight: 700;
     cursor: pointer; transition: background 0.15s; font-family: inherit;
@@ -167,9 +167,62 @@
   }
   #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   .sla-note { font-size: 11.5px; color: #a09a8a; margin-top: 10px; line-height: 1.7; }
+
+  /* ── 登录页 ───────────────────────── */
+  #loginScreen {
+    position: fixed; inset: 0; z-index: 200; background: #23231f;
+    display: flex; align-items: center; justify-content: center;
+    background-image: radial-gradient(circle at 20% 20%, #2c2a24 0%, #23231f 55%);
+  }
+  #loginScreen.hide { display: none; }
+  .login-box {
+    width: 372px; background: #fdfcf8; border-radius: 16px; padding: 38px 36px 32px;
+    box-shadow: 0 24px 70px rgba(0,0,0,0.4);
+  }
+  .login-box .brand { text-align: center; margin-bottom: 26px; }
+  .login-box .brand .name { font-size: 22px; font-weight: 900; color: #23231f; letter-spacing: 0.04em; }
+  .login-box .brand .sub { font-size: 11px; color: #a09a8a; margin-top: 5px; letter-spacing: 0.22em; }
+  .login-box .field { margin-bottom: 14px; }
+  .login-box .field label { display: block; font-size: 12px; color: #8a8578; margin-bottom: 6px; font-weight: 600; }
+  .login-box .field input { width: 100%; }
+  .login-box .btn-primary { width: 100%; margin-top: 8px; padding: 12px; }
+  .login-err {
+    background: #faf0ec; border: 1px solid #e4b9ab; color: #b0492f;
+    font-size: 12.5px; border-radius: 8px; padding: 9px 12px; margin-bottom: 14px;
+    display: none; line-height: 1.6;
+  }
+  .login-err.show { display: block; }
+  .login-note { font-size: 11.5px; color: #a09a8a; text-align: center; margin-top: 18px; line-height: 1.8; }
+  .login-note .demo { color: #8a5a2b; font-weight: 700; }
 </style>
 </head>
 <body>
+
+<!-- ── 登录页（管理端独立账号密码，不走手机验证码） ── -->
+<div id="loginScreen">
+  <div class="login-box">
+    <div class="brand">
+      <div class="name serif">随口说 · 站长后台</div>
+      <div class="sub">ADMIN CONSOLE</div>
+    </div>
+    <div class="login-err" id="loginErr"></div>
+    <div class="field">
+      <label>账号</label>
+      <input type="text" id="loginUser" placeholder="管理员账号" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>密码</label>
+      <input type="password" id="loginPwd" placeholder="登录密码" autocomplete="current-password">
+    </div>
+    <button class="btn btn-primary" onclick="doLogin()">登 录</button>
+    <div class="login-note">
+      管理端为独立账号体系，与 C 端手机号登录隔离。<br>
+      账号由后台种子写入，无自助注册 / 找回。<br>
+      <span class="demo">原型演示账号：admin / sks2026</span>
+    </div>
+  </div>
+</div>
+
 <div class="layout">
 
   <!-- ── 侧边栏（暖炭） ── -->
@@ -184,8 +237,9 @@
     <div class="nav-item" onclick="toast('原型仅演示「开通额度」页')">🎁 补偿额度</div>
     <div class="nav-item" onclick="toast('原型仅演示「开通额度」页')">📊 经营看板</div>
     <div class="foot">
-      操作人：站长本人<br>
-      承诺 SLA：工作时间 <strong style="color:#c89b6a">10 分钟内</strong>开通
+      操作人：<span id="footAdmin">站长本人</span><br>
+      承诺 SLA：工作时间 <strong style="color:#c89b6a">10 分钟内</strong>开通<br>
+      <span style="cursor:pointer;color:#c89b6a" onclick="doLogout()">↩ 退出登录</span>
     </div>
   </aside>
 
@@ -278,8 +332,8 @@
 /* ── mock 数据 ───────────────────────── */
 const users = [
   { id: 1, name: '装修避坑老张', phone: '138****6688', tail: '6688', city: '杭州', industry: '全屋定制', firstCharge: false, balance: 3 },
-  { id: 2, name: '海棠餐饮小雪', phone: '159****6688', tail: '6688', city: '成都', industry: '餐饮', firstCharge: true,  balance: 0 },
-  { id: 3, name: '律师说家事',   phone: '137****3355', tail: '3355', city: '北京', industry: '法律咨询', firstCharge: true, balance: 10 },
+  { id: 2, name: '海棠餐饮小雪', phone: '159****6688', tail: '6688', city: '成都', industry: '餐饮', firstCharge: false, balance: 0 },   // 已有已开通充值单（下方 150 条 done 记录），不再算首充
+  { id: 3, name: '律师说家事',   phone: '137****3355', tail: '3355', city: '北京', industry: '法律咨询', firstCharge: true, balance: 3 },  // 仅注册体验单：余额 = 注册赠送 3 条，开通时才 +套餐+10
 ];
 
 let orders = [
@@ -289,7 +343,7 @@ let orders = [
   { time: '昨天 21:15', user: '装修避坑老张 138****6688', tail: '6688', pkg: '补偿 +5', amount: 0, first: '—', state: 'done', op: '站长 · 7/18 服务不可用补偿' },
 ];
 
-let selUser = null, selPkg = null, curFilter = 'all';
+let selUser = null, selPkg = null, curFilter = 'all', currentAdmin = '站长本人';
 
 /* ── 搜索与选择 ───────────────────────── */
 function searchTail() {
@@ -365,7 +419,7 @@ function doOpen() {
   const record = {
     time: '今天 ' + hm, user: selUser.name + ' ' + selUser.phone, tail: selUser.tail,
     pkg: selPkg + ' 条', amount: selPkg === 50 ? 49 : 129,
-    first: selUser.firstCharge ? '是' : '否', state: 'done', op: '站长 · 短信已发',
+    first: selUser.firstCharge ? '是' : '否', state: 'done', op: currentAdmin + ' · 短信已发',
   };
   // 首充：把该用户注册时创建的「免费体验」订单转为已开通；复购则新增订单记录
   const trialIdx = orders.findIndex(o => o.state === 'trial' && o.user.includes(selUser.phone));
@@ -431,6 +485,31 @@ function quickFill(i) {
   toast('已按订单尾号 ' + o.tail + ' 搜索，请确认用户后开通');
 }
 
+/* ── 登录 ───────────────────────── */
+const ADMIN_CRED = { user: 'admin', pwd: 'sks2026', name: '站长本人' };
+function doLogin() {
+  const u = document.getElementById('loginUser').value.trim();
+  const p = document.getElementById('loginPwd').value;
+  const err = document.getElementById('loginErr');
+  if (!u || !p) { err.textContent = '请输入账号和密码'; err.classList.add('show'); return; }
+  if (u !== ADMIN_CRED.user || p !== ADMIN_CRED.pwd) {
+    err.textContent = '账号或密码错误。管理端无自助找回，如遗忘请从服务器重置种子密码。';
+    err.classList.add('show');
+    document.getElementById('loginPwd').value = '';
+    return;
+  }
+  err.classList.remove('show');
+  currentAdmin = ADMIN_CRED.name;
+  document.getElementById('footAdmin').textContent = currentAdmin;
+  document.getElementById('loginScreen').classList.add('hide');
+  toast('欢迎回来，' + currentAdmin);
+}
+function doLogout() {
+  document.getElementById('loginUser').value = '';
+  document.getElementById('loginPwd').value = '';
+  document.getElementById('loginScreen').classList.remove('hide');
+}
+
 /* ── 通用 ───────────────────────── */
 function show(id) { document.getElementById(id).classList.add('show'); }
 function hide(id) { document.getElementById(id).classList.remove('show'); }
@@ -442,6 +521,8 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
 }
 document.getElementById('tailInput').addEventListener('keydown', e => { if (e.key === 'Enter') searchTail(); });
+['loginUser','loginPwd'].forEach(id =>
+  document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); }));
 
 renderOrders();
 </script>
