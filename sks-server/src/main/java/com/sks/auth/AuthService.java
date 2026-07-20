@@ -1,5 +1,6 @@
 package com.sks.auth;
 
+import com.sks.admin.RechargeOrderService;
 import com.sks.common.BizException;
 import com.sks.common.ErrorCode;
 import com.sks.common.JwtUtil;
@@ -25,13 +26,17 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li><b>5 次错误锁定 10 分钟</b>：复用 {@code sms_code.err_count}——最近一条码 {@code err_count >= 5}
  *       且 {@code created_at} 距今不足 10 分钟即视为锁定。锁定期间既不可登录也不可发新码，抛 {@link
  *       ErrorCode#SMS_CODE_LOCKED}。验证码本身 5 分钟过期，锁定窗口比它长，复用已有列无需新列。
- *   <li><b>登录即注册</b>：手机号不存在则插入 {@code app_user}，返回 {@code isNew=true}。
- *       <strong>不在此处</strong>调用任何额度/注册钩子逻辑——{@code ensureAccount}、trial 单、
- *       注册送额度由 Task 0.7 接线（{@code CreditService} 此时尚不存在）。
+ *   <li><b>登录即注册</b>：手机号不存在则插入 {@code app_user}，返回 {@code isNew=true}。首次注册
+ *       （{@code isNew=true}）时调用 {@link RechargeOrderService#onUserRegistered} 注册钩子——三步原子
+ *       （{@code @Transactional}）：① {@code ensureAccount} 建账 → ② 建 {@code status='trial'} 免费
+ *       体验单 → ③ {@code credit} 送 {@code sks.trial-credit}（默认 3）条体验额度。钩子是独立事务方法
+ *       （跨 bean 调用，Spring 代理生效），login 自身非 {@code @Transactional}，但 app_user 插入会先
+ *       auto-commit；钩子失败仅回滚钩子三步，不破坏 app_user 落库——用户可重新发码登录重试
+ *       （{@code credit} 幂等，重试不重复入账）。
  *   <li><b>SMS 发送留桩</b>：MVP 期只把验证码写入 {@code sms_code} 表 + 日志，不调真实网关（联调时替换）。
  * </ul>
  *
- * <p>本服务不做任何额度相关操作——登录链路必须免费、不引入跨服务对账。
+ * <p>本服务的额度相关操作仅限注册钩子一次性赠送体验额度（免费）——登录链路本身不扣费、不引入跨服务对账。
  */
 @Service
 public class AuthService {
@@ -52,12 +57,18 @@ public class AuthService {
     private final SmsCodeMapper smsCodeMapper;
     private final AppUserMapper appUserMapper;
     private final JwtUtil jwtUtil;
+    private final RechargeOrderService rechargeOrderService;
     private final SecureRandom random = new SecureRandom();
 
-    public AuthService(SmsCodeMapper smsCodeMapper, AppUserMapper appUserMapper, JwtUtil jwtUtil) {
+    public AuthService(
+            SmsCodeMapper smsCodeMapper,
+            AppUserMapper appUserMapper,
+            JwtUtil jwtUtil,
+            RechargeOrderService rechargeOrderService) {
         this.smsCodeMapper = smsCodeMapper;
         this.appUserMapper = appUserMapper;
         this.jwtUtil = jwtUtil;
+        this.rechargeOrderService = rechargeOrderService;
     }
 
     /** 登录成功后的返回体：JWT、用户 id、是否本次新建的 app_user。 */
@@ -114,6 +125,9 @@ public class AuthService {
             // default_platform / profile_completeness / token_version 走 DB 默认值
             appUserMapper.insert(user);
             isNew = true;
+            // 注册钩子（跨 bean @Transactional）：建账 + trial 单 + 送体验额度。login 自身非事务，
+            // app_user 已 auto-commit；钩子失败仅回滚钩子三步，不破坏 app_user——可重新登录重试（幂等）。
+            rechargeOrderService.onUserRegistered(user.getId());
         }
         String token = jwtUtil.issue(user.getId(), "user", user.getTokenVersion() == null ? 0 : user.getTokenVersion());
         return new LoginResult(token, user.getId(), isNew);

@@ -26,3 +26,6 @@ logging:
   level:
     com.sks: INFO
     org.springframework.security: INFO
+
+sks:
+  trial-credit: ${TRIAL_CREDIT:3}
