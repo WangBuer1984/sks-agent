@@ -2,6 +2,7 @@ package com.sks.user;
 
 import com.sks.common.BizException;
 import com.sks.common.ErrorCode;
+import com.sks.credit.CreditService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -12,19 +13,21 @@ import org.springframework.transaction.annotation.Transactional;
  * nickname / industry / identity / style / weeklyGoal 已填数 ÷ 5 × 100（取整）。
  * 基础资料（gender/age/city）与主平台不计入分母——它们影响生成质量但不构成「可创作」的下限。
  *
- * <p>{@link #me} 返回的 {@code balance} 当前硬编码为 0 占位——{@code CreditService.balance} 在
- * Task 0.5 才建，本任务先返回 0，Task 0.5 完成后一行接线替换。
+ * <p>{@link #me} 返回的 {@code balance} 来自 {@link CreditService#balance}（额度账本，Task 0.5），
+ * 注册体验/开通/补偿/扣减的额度在此实时反映。
  */
 @Service
 public class UserService {
 
     private final AppUserMapper appUserMapper;
+    private final CreditService creditService;
 
-    public UserService(AppUserMapper appUserMapper) {
+    public UserService(AppUserMapper appUserMapper, CreditService creditService) {
         this.appUserMapper = appUserMapper;
+        this.creditService = creditService;
     }
 
-    /** {@code GET /api/user/me} 的返回体。{@code balance} 占位 0，Task 0.5 接线真实余额。 */
+    /** {@code GET /api/user/me} 的返回体。{@code balance} 取自 {@link CreditService#balance}。 */
     public record MeResponse(
             Long userId,
             String phone,
@@ -46,8 +49,7 @@ public class UserService {
         if (u == null) {
             throw new BizException(ErrorCode.UNAUTHORIZED);
         }
-        // TODO Task 0.5: 接线 CreditService.balance(userId)，替换占位 0
-        int balance = 0;
+        int balance = creditService.balance(userId);
         return new MeResponse(
                 u.getId(),
                 u.getPhone(),

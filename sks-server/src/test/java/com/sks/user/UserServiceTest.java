@@ -51,7 +51,8 @@ class UserServiceTest extends AbstractDbTest {
         assertEquals("北京", me.city());
         assertEquals("kuaishou", me.defaultPlatform());
         assertEquals(20, me.completeness()); // 1/5 = 20
-        // balance 占位为 0，Task 0.5 接线真实余额
+        // 本测试用 registerUser 直接插入 app_user（不走 AuthService 注册钩子），
+        // 故无 credit_account 行 → CreditService.balance 返回 0；证明 /me 余额取自额度账本而非占位。
         assertEquals(0, me.balance());
         assertNotNull(me.phone());
     }
