@@ -150,6 +150,7 @@ sks-ai/
 ### 2.3 服务间接口契约
 
 - Java → Python 全部走内网 REST。请求体自带**全部上下文**（定位档案 JSON、用户创作资料）；**Python 直连数据库的例外**：① RAG 检索直连 pgvector（Java 只传 `user_id` 与选题文本）；② 定位访谈的 LangGraph checkpointer 读写会话状态；③ 异步拆解任务（拆账号/拆视频链接版）进度/结果直写 `analyze_task` 表。这三处之外，Python 不碰业务库。
+- **Java 对 pgvector 的读写边界（与上条不矛盾，明确写出防误读）**：`kb_card` 是 Java 拥有的业务表，Java 可以对它做 pgvector 读写——**写**：KB 卡片 CRUD 时调 Python `/ai/embed` 取向量后写 `embedding` 列；**读**：选题热点路对热点标题算向量后用 SQL 在 B 层卡上做余弦匹配打分（§2.1 topic 模块，简单 SQL 排序，不是 LangGraph skill）。上条「RAG 检索直连 pgvector 归 Python」特指**文案生成的 B 层卡召回**（`retrieve_b_cards`，检索结果要注入 prompt、与生成流程耦合）——这条留在 Python；Java 不做 script 生成链路上的 RAG 检索。
 - **文案生成**接口为**同步 JSON**：Python 生成完整结果 + 内容安全审核通过后一次性返回（含完整稿件 + 引用卡片 id），Java 收到才落库、确认扣费。生成期间前端展示进度动画/阶段提示（如「正在检索知识库 → 正在撰写 → 安全审核中」）。**定位访谈**同为同步 JSON（一问一答，每轮一次请求），但**不涉及扣费**（PRD §4.2 校准不消耗额度）。
 - 每个请求带 `X-Request-Id`（Java 生成）串联两侧日志；带 `X-Service-Token` 共享密钥防内网误访问。
 - 异步拆解任务（拆账号约 3-5 分钟 / 拆视频链接版约 1 分钟）：Java 建 `analyze_task` 记录 → 调 Python 异步接口**传 `task_id`**，Python 受理后立即返回 202 → Python 后台跑并把进度/结果按 `task_id` 写回 `analyze_task` 表 → **Java @Scheduled 直接读 `analyze_task` 表**推进状态（不轮询 Python 接口、不用回调、不引入独立 job_id：Python 直写同一张表，全链路只有一个任务 ID）。

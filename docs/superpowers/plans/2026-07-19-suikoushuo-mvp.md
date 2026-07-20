@@ -177,8 +177,10 @@ CREATE TABLE app_user (
   id BIGSERIAL PRIMARY KEY,
   phone VARCHAR(20) UNIQUE NOT NULL,
   nickname VARCHAR(50),
+  gender VARCHAR(10), age INT, city VARCHAR(50),   -- 基础资料（PRD §4.3；city 注入生成做本地化选题）
   industry VARCHAR(50), identity VARCHAR(50), style VARCHAR(50),
   weekly_goal INT,
+  default_platform VARCHAR(20) NOT NULL DEFAULT 'douyin',  -- 主平台（PRD §4.2「默认生成用户主平台版本」的存储位置）
   profile_completeness INT NOT NULL DEFAULT 0,
   token_version INT NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -312,7 +314,7 @@ CREATE TABLE analyze_task (
   user_id BIGINT NOT NULL REFERENCES app_user(id),
   task_type VARCHAR(10) NOT NULL,  -- account/video
   status VARCHAR(10) NOT NULL DEFAULT 'queued', -- queued/running/partial/done/failed
-  progress INT NOT NULL DEFAULT 0,
+  progress INT NOT NULL DEFAULT 0,  -- 语义钉死：已完成条数/总条数×100（整数），不是阶段进度——按比例退款 refundN = charged×(100-progress)/100 的数学依赖此口径（Task 3.3）
   charged INT NOT NULL DEFAULT 0,
   input JSONB,
   result JSONB,
@@ -355,7 +357,7 @@ ON CONFLICT (username) DO NOTHING;
 
 - [ ] **Step 3: 迁移执行验证**
 
-Run: `docker compose up -d --build sks-server && sleep 15 && docker compose exec -T postgres psql -U sks -d sks -c "\dt"`（restart 不重建镜像，新迁移文件进不去，必须 `--build`）
+Run: `docker compose --env-file .env up -d --build sks-server && sleep 15 && docker compose exec -T postgres psql -U sks -d sks -c "\dt"`（restart 不重建镜像，新迁移文件进不去，必须 `--build`；`--env-file .env` 与 Task 0.1 Step 5 保持一致——compose 默认也会自动加载根目录 `.env`，显式写出只为统一风格）
 Expected: 列出 15 张业务表 + `flyway_schema_history`（P2 起 LangGraph checkpointer 还会自建检查点表，不必惊讶）；`\d credit_ledger` 显示 `UNIQUE (biz_id, biz_type, type)`。
 
 - [ ] **Step 4: Commit**
@@ -379,7 +381,7 @@ git commit -m "feat: core database schema (15 tables + pgvector) and admin seed"
 - Produces:
   - `ApiResponse<T>{ int code; String message; T data; }`，静态 `ok(data)` / `fail(ErrorCode)`。
   - `BizException(ErrorCode code)` 运行时异常。
-  - `ErrorCode` 枚举：`INSUFFICIENT_BALANCE(4001)`、`SMS_RATE_LIMIT(4002)`、`SMS_CODE_INVALID(4003)`、`AI_FAILED(5001)`、`CONTENT_BLOCKED(5002)`、`UNAUTHORIZED(4010)`、`ADMIN_UNAUTHORIZED(4011)` 等，各带 `int code` + `String msg`。
+  - `ErrorCode` 枚举：`INSUFFICIENT_BALANCE(4001)`、`SMS_RATE_LIMIT(4002)`、`SMS_CODE_INVALID(4003)`、`SMS_CODE_LOCKED(4004)`（验证码连续 5 次错误锁定 10 分钟，Task 0.4 消费）、`AI_FAILED(5001)`、`CONTENT_BLOCKED(5002)`、`UNAUTHORIZED(4010)`、`ADMIN_UNAUTHORIZED(4011)` 等，各带 `int code` + `String msg`。
   - `JwtUtil`：`String issue(long subjectId, String audience, int tokenVersion)` / `Claims parse(String token, String audience)`。`audience` 取 `"user"` 或 `"admin"`，**用不同密钥签名**（`JWT_SECRET_USER` / `JWT_SECRET_ADMIN`），解析时校验 audience 匹配否则抛异常——这是 C 端/管理端 token 隔离的技术底座。
 
 - [ ] **Step 1: 写 `JwtUtilTest`（先失败）**
@@ -425,11 +427,11 @@ git commit -m "feat: common layer (ApiResponse, error codes, JWT with audience i
 **Interfaces:**
 - Consumes: `JwtUtil`、`ErrorCode`、`ApiResponse`（Task 0.3）。
 - Produces:
-  - `POST /api/auth/send-code {phone}` → 发验证码，写 `sms_code`；频控：同手机号 1 分钟 1 条、1 小时 5 条、**1 天 10 条（PRD §11.1；达到日限当日不可再发，天然等效「锁定 24h」，无需额外锁定字段）**，超限抛 `SMS_RATE_LIMIT`。
-  - `POST /api/auth/login {phone, code}` → 校验最近未使用且未过期验证码，错误 `err_count+1`；成功则 `app_user` 不存在即注册（并触发注册钩子，见 Task 0.7），签发 user JWT 返回 `{token, userId, isNew}`。
+  - `POST /api/auth/send-code {phone}` → 发验证码，写 `sms_code`；频控：同手机号 1 分钟 1 条、1 小时 5 条、**1 天 10 条**，超限抛 `SMS_RATE_LIMIT`。**有意简化，与 PRD §11.1 有偏差**：PRD 写「超日限锁定 24h」（滑动窗口，23:00 撞限锁到次日 23:00）；MVP 按「近 24h 滚动计数 ≥10 即拒绝」实现——三级窗口统一用 `created_at` 滚动聚合（1min/1h/24h），既贴近 PRD 语义又无需额外锁定字段。若实现为自然日重置则 00:00 提前解锁，属可接受偏差，但优先用滚动 24h 窗口。
+  - `POST /api/auth/login {phone, code}` → 校验最近未使用且未过期验证码，错误 `err_count+1`；**连续 5 次错误锁定 10 分钟（PRD §11.1）**：该手机号最近一条码 `err_count >= 5` 且该行 `created_at` 距今不足 10 分钟即视为锁定（复用已有列，无需新列；验证码本身 5 分钟过期，锁定窗口比它长），锁定期间不可再尝试登录也不可发新码，抛 `SMS_CODE_LOCKED`（Task 0.3 已列入 ErrorCode）；成功则 `app_user` 不存在即注册（并触发注册钩子，见 Task 0.7），签发 user JWT 返回 `{token, userId, isNew}`。
   - `AuthService.checkRateLimit(phone)`：按 `idx_sms_phone_time` 聚合 count 判断，纯 SQL 无 Redis。
-  - `GET /api/user/me` → `{userId, phone, nickname, industry, identity, style, weeklyGoal, completeness, balance}`（Task 0.8 工作台消费此接口。`balance` 来自 `CreditService.balance`——该服务在 Task 0.5 才建，本任务先返回 0 占位，Task 0.5 完成后一行接线）。
-  - `PUT /api/user/me {nickname?, industry?, identity?, style?, weeklyGoal?}` → 更新创作资料并重算 `profile_completeness`（已填字段数 / 5 × 100，取整）。
+  - `GET /api/user/me` → `{userId, phone, nickname, gender, age, city, industry, identity, style, weeklyGoal, defaultPlatform, completeness, balance}`（Task 0.8 工作台消费此接口。`balance` 来自 `CreditService.balance`——该服务在 Task 0.5 才建，本任务先返回 0 占位，Task 0.5 完成后一行接线）。
+  - `PUT /api/user/me {nickname?, gender?, age?, city?, industry?, identity?, style?, weeklyGoal?, defaultPlatform?}` → 更新基础资料（PRD §4.3：性别/年龄/城市；`city` 会注入生成做本地化选题）+ 创作资料 + 主平台，并重算 `profile_completeness`（**口径：只按创作资料 5 字段算**——nickname/industry/identity/style/weeklyGoal 已填数 / 5 × 100 取整；基础资料与主平台不计入分母）。手机号换绑 MVP 不做（PRD §4.3 列了但优先级低，留 V1.1）。
 
 - [ ] **Step 1: 写 `AuthServiceTest` 与 `UserServiceTest`（先失败）**
 
@@ -443,6 +445,16 @@ void rateLimitBlocksSecondSendWithinOneMinute() {
 void loginWithWrongCodeIncrementsErrCount() {
     authService.sendCode("13800000001");
     assertThrows(BizException.class, () -> authService.login("13800000001", "000000"));
+}
+@Test
+void fiveWrongAttemptsLockForTenMinutes() {
+    authService.sendCode("13800000002");
+    for (int i = 0; i < 5; i++) {
+        assertThrows(BizException.class, () -> authService.login("13800000002", "000000"));
+    }
+    // 第 6 次：即便输入正确验证码也被锁定拒绝（SMS_CODE_LOCKED）
+    BizException e = assertThrows(BizException.class, () -> authService.login("13800000002", realCodeOf("13800000002")));
+    assertEquals(ErrorCode.SMS_CODE_LOCKED, e.getCode());
 }
 ```
 
@@ -464,7 +476,7 @@ Expected: FAIL（`AuthService`/`UserService` 未定义）。
 
 - [ ] **Step 3: 实现 `AuthService` + `UserService` + Mapper + Controller**
 
-`sendCode`：先 `checkRateLimit`，生成 6 位码，写 `sms_code`（`expire_at = now()+5min`），调阿里云 SMS（MVP 可先接口留桩打日志，联调时替换）。`login`：查最近一条未用未过期码比对，错误自增 `err_count` 抛 `SMS_CODE_INVALID`；成功标 `used=true`，`app_user` upsert，签发 JWT。`UserService.me/update`：按 Interfaces 实现，`completeness` 在 update 时重算落库。
+`sendCode`：先查锁定（同 login 的锁定判定，锁定中抛 `SMS_CODE_LOCKED`）再 `checkRateLimit`，生成 6 位码，写 `sms_code`（`expire_at = now()+5min`），调阿里云 SMS（MVP 可先接口留桩打日志，联调时替换）。`login`：先查该手机号是否处于锁定（最近一条码 `err_count >= 5` 且未过 10 分钟）→ 抛 `SMS_CODE_LOCKED`；再查最近一条未用未过期码比对，错误自增 `err_count`（增至 5 即进入锁定）抛 `SMS_CODE_INVALID`；成功标 `used=true`，`app_user` upsert，签发 JWT。`UserService.me/update`：按 Interfaces 实现，`completeness` 在 update 时重算落库。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -489,7 +501,7 @@ git commit -m "feat: phone+SMS login with rate limiting + user profile endpoints
 - Produces（后续 script/analyze 全依赖这些签名，务必一致）：
   - `boolean deduct(long userId, int n, String bizType, String bizId)`：原子扣减 + 写流水，余额不足抛 `BizException(INSUFFICIENT_BALANCE)`。成功 return true。
   - `void refund(long userId, int n, String bizType, String bizId)`：幂等退款，靠 `(biz_id, biz_type, type=refund)` 唯一约束，重复调用静默跳过（捕获唯一约束冲突）。
-  - `void credit(long userId, int n, String bizType, String bizId, String memo)`：充值/赠送加额度（注册体验/开通/补偿用）。
+  - `void credit(long userId, int n, String bizType, String bizId, String memo)`：充值/赠送加额度（注册体验/开通/补偿用）。**与 refund 同款幂等**：先查 `(biz_id, biz_type, type='credit')` 是否已存在，存在直接 return（不加额度）；唯一约束兜底防并发。否则管理员双击/请求重试重复 open 同一订单时，第二次会以 `DuplicateKeyException` 异常形式暴露（钱安全但体验差），幂等 no-op 才是期望行为。
   - `void ensureAccount(long userId)`：`credit_account` 不存在则插入 `balance=0` 一行（注册钩子用，`ON CONFLICT DO NOTHING`）。
   - `int balance(long userId)`。
   - 扣减 SQL：`UPDATE credit_account SET balance = balance - #{n}, updated_at = now() WHERE user_id = #{uid} AND balance >= #{n}`，`@Update` 返回影响行数；行数=0 即余额不足。**同一事务内先扣 account 成功、再插 ledger。**
@@ -511,6 +523,13 @@ void refundIsIdempotent() {
     creditService.refund(uid, 1, "generate", "s1");
     creditService.refund(uid, 1, "generate", "s1"); // 重复不应多退
     assertEquals(10, creditService.balance(uid));
+}
+
+@Test
+void creditIsIdempotent() {
+    creditService.credit(uid, 50, "recharge", "o2", null);
+    creditService.credit(uid, 50, "recharge", "o2", null); // 同订单重复入账应为 no-op（管理员双击/重试）
+    assertEquals(50, creditService.balance(uid));
 }
 
 @Test
@@ -541,9 +560,9 @@ Expected: FAIL（`CreditService` 未定义）。
 
 - [ ] **Step 3: 实现 `CreditService`（原子 SQL + 幂等退款）**
 
-`deduct`：`@Transactional`，调 Mapper 原子 UPDATE，影响行数=0 抛 `INSUFFICIENT_BALANCE`；否则插 `credit_ledger(delta=-n, type='debit')`。`refund`：先按 account 加回 n，再插 `ledger(type='refund')`，用 try-catch 捕获 `DuplicateKeyException` 表示已退过则回滚加额度部分（或先查 ledger 是否存在该 refund 记录，存在则直接 return，不加额度——推荐后者，更清晰）。`credit`：加额度 + 插流水，`credit_account` 不存在则先 insert 一行 0 再更新（注册钩子已建账户，见 Task 0.7）。
+`deduct`：`@Transactional`，调 Mapper 原子 UPDATE，影响行数=0 抛 `INSUFFICIENT_BALANCE`；否则插 `credit_ledger(delta=-n, type='debit')`。`refund`：先按 account 加回 n，再插 `ledger(type='refund')`，用 try-catch 捕获 `DuplicateKeyException` 表示已退过则回滚加额度部分（或先查 ledger 是否存在该 refund 记录，存在则直接 return，不加额度——推荐后者，更清晰）。`credit`：**同款幂等**——先查 `(biz_id, biz_type, type='credit')` 存在则直接 return；否则加额度 + 插流水，`credit_account` 不存在则先 insert 一行 0 再更新（注册钩子已建账户，见 Task 0.7）。
 
-> **实现要点**：`refund` 推荐「先查 `(biz_id,biz_type,type=refund)` 是否已存在，存在直接 return」，避免依赖异常控制流；唯一约束作为兜底防并发重复。
+> **实现要点**：`refund` 与 `credit` 都用「先查 `(biz_id,biz_type,type)` 是否已存在，存在直接 return」，避免依赖异常控制流；唯一约束作为兜底防并发重复。测试补一条 `creditIsIdempotent`（同 orderId 调两次 credit，余额只加一次）。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -627,7 +646,7 @@ git commit -m "feat: dual security filter chains + admin login with seeded accou
   - 注册钩子：`AuthService.login` 首次注册用户时，① `ensureAccount(uid)`；② 建 `recharge_order(order_type='recharge', status='trial')` 免费体验单；③ **送体验额度** `credit.credit(uid, trialCredit, biz_type=trial, biz_id=trial订单id)`——「免费体验」必须真能体验，开通前用户可实际生成几条感受价值。**条数可配置**：`application.yml` 里 `sks.trial-credit: ${TRIAL_CREDIT:3}`（环境变量注入，默认 3），业务代码用 `@Value`/`@ConfigurationProperties` 读取，不硬编码。
   - `GET /api/admin/users?phoneTail=` → 按手机尾号（后 4-6 位）模糊搜用户，返回 `[{userId, phoneMasked, balance, latestOrderStatus}]`——管理端原型的核心交互是「尾号搜索 → 多人时逐一确认 → 开通」，此接口是入口。
   - `GET /api/admin/orders?status=` → 订单列表（含 `userId`、用户手机尾号、套餐、状态、操作人）。
-  - `POST /api/admin/orders/open {userId, pkg}` → 开通：套餐 `p50`→50 条 ¥49 / `p150`→150 条 ¥129（金额回填 `amount`）；调 `credit.credit(+N, biz_type=recharge, biz_id=orderId)`；**首充判定（唯一口径）**：该用户此前无 `status='done' AND order_type='recharge'` 的单即为首充，是首充则额外 `credit.credit(+10, biz_type=bonus, biz_id=同一 orderId)`（biz_type 不同，不撞唯一约束）并把本单 `is_first_charge=true`；把该用户的 trial 单转 `done` 并回填 `admin_user_id/opened_at`，复购则新建 done 单；发短信（留桩）。返回更新后余额。
+  - `POST /api/admin/orders/open {userId, pkg}` → 开通：**起手幂等判断**——若目标单已 `status='done'` 直接返回当前余额（防管理员双击/重试重复开通；`CreditService.credit` 的流水幂等是第二道防线）；套餐 `p50`→50 条 ¥49 / `p150`→150 条 ¥129（金额回填 `amount`）；调 `credit.credit(+N, biz_type=recharge, biz_id=orderId)`；**首充判定（唯一口径）**：该用户此前无 `status='done' AND order_type='recharge'` 的单即为首充，是首充则额外 `credit.credit(+10, biz_type=bonus, biz_id=同一 orderId)`（biz_type 不同，不撞唯一约束）并把本单 `is_first_charge=true`；把该用户的 trial 单转 `done` 并回填 `admin_user_id/opened_at`，复购则新建 done 单；发短信（留桩）。返回更新后余额。
   - `POST /api/admin/compensate {userId, n, memo}` → 补偿额度（服务不可用等场景，对齐管理端原型「补偿 +5」记录）：新建 `recharge_order(order_type='compensate', pkg='补偿+N', amount=0, status='done', admin_user_id, memo)` 留痕 → `credit.credit(+n, biz_type=compensate, biz_id=orderId)`。返回更新后余额。补偿单 `order_type='compensate'`，**不参与首充判定**。
 
 - [ ] **Step 1: 写 `RechargeOrderServiceTest`（先失败）**
@@ -715,7 +734,7 @@ git commit -m "feat: trial order on registration + manual activation with first-
 
 - [ ] **Step 4: 手动验证主链路**
 
-Run: `docker compose up -d --build`，浏览器走：注册登录 → 工作台看到余额 3（注册体验）→ 管理端登录 → 尾号搜到该用户、看到 trial 单 → 开通 p50 → C 端刷新余额变 63（3+50+10）。
+Run: `docker compose --env-file .env up -d --build`，浏览器走：注册登录 → 工作台看到余额 3（注册体验）→ 管理端登录 → 尾号搜到该用户、看到 trial 单 → 开通 p50 → C 端刷新余额变 63（3+50+10）。
 Expected: 全链路通，额度正确。
 
 - [ ] **Step 5: Commit**
@@ -754,6 +773,7 @@ git commit -m "feat: web skeleton - user login/workbench + admin console (from p
   - `safety/content_safety.py`：`async def check(text: str) -> bool`（True=安全）。
   - `api/deps.py`：`verify_service_token(x_service_token: str = Header(...))`，不匹配 `SERVICE_TOKEN` 抛 403。
   - `POST /ai/embed {text}` → `{embedding: [1024 floats]}`（供 Java KB 写卡用，Task 1.2 消费）。
+  - `POST /ai/safety/check {text}` → `{safe: bool}`（封装 `safety.check`，供 Java 侧对用户直接编辑的 UGC 过审用——KB 卡片 CRUD、选题标题等，Task 1.2 消费。设计文档 §5.1：UGC 与 LLM 输出同样要过内容安全）。
 
 - [ ] **Step 1: 写 `test_llm_models.py`（先失败）**
 
@@ -774,7 +794,7 @@ Expected: FAIL（`app.llm.models` 不存在）。
 
 - [ ] **Step 3: 实现基座**
 
-按 Interfaces 实现。`MODEL_FOR` 按设计文档模型选型表填：`script_gen/interview/video_analyze` = `glm-4.7` thinking 关；`card_gen`/`rewrite_sentence`/`account_analyze_item` = `glm-4.5-air`；`account_analyze_summary`/`attribution` = `glm-4.7` thinking 开。`chat` 用 langchain-openai `ChatOpenAI(base_url=智谱兼容端点, api_key=ZHIPU_API_KEY)`。`embed` 调智谱 embedding-3，断言返回 1024 维。
+按 Interfaces 实现。`MODEL_FOR` 按设计文档模型选型表填：`script_gen/interview/video_analyze` = `glm-4.7` thinking 关；`card_gen`/`rewrite_sentence`/`account_analyze_item` = `glm-4.5-air`；`account_analyze_summary`/`attribution` = `glm-4.7` thinking 开。**实现时与智谱开放平台文档核对确切的 model 字符串与 thinking 参数传法**（`glm-4.7`/`glm-4.5-air` 沿用自设计文档，可能与线上实际 ID 有出入；好在只改 `models.py` 一处，业务代码不感知）。`chat` 用 langchain-openai `ChatOpenAI(base_url=智谱兼容端点, api_key=ZHIPU_API_KEY)`。`embed` 调智谱 embedding-3，断言返回 1024 维。
 
 - [ ] **Step 4: 运行确认通过**
 
@@ -792,14 +812,15 @@ git commit -m "feat(ai): base layer - GLM client, embedding, content safety, ser
 
 **Files:**
 - Create: `sks-server/src/main/java/com/sks/kb/{KbController,KbCardService,KbCard,KbCardMapper,CardHistoryMapper,CardCitationMapper}.java`
-- Create: `sks-server/src/main/java/com/sks/aiclient/AiClient.java`（若 P0 未建则此处建）
+- Create: `sks-server/src/main/java/com/sks/aiclient/AiClient.java`（若 P0 未建则此处建。**HTTP 客户端基座在此一次做对，后续所有方法复用**：构造时从配置读 `SERVICE_TOKEN` 并给每个请求设 `X-Service-Token` 头；每个请求生成 UUID 写 `X-Request-Id` 头并打进日志 MDC——落实全局约束「Java→Python 每请求带这两个头」，各业务方法不再单独处理。统一超时/重试/错误码翻译也在这层。）
 - Create: `sks-web/src/pages/KB.tsx`（知识库管理页）
 - Test: `sks-server/src/test/java/com/sks/kb/KbCardServiceTest.java`
 
 **Interfaces:**
-- Consumes: `AiClient.embed(text)`（调 Python `/ai/embed`，Task 1.1 已产出）。
+- Consumes: `AiClient.embed(text)`、`AiClient.safetyCheck(text)`（调 Python `/ai/embed`、`/ai/safety/check`，Task 1.1 已产出）。
 - Produces:
   - `POST /api/kb/cards`、`PUT /api/kb/cards/{id}`、`DELETE /api/kb/cards/{id}`、`GET /api/kb/cards?layer=`。
+  - **UGC 过审（设计文档 §5.1）**：`create`/`update` 先对 `title + content` 调 `AiClient.safetyCheck`，命中抛 `CONTENT_BLOCKED` 不落库——用户直接编辑的卡片内容是 UGC，必须与 card_gen 路径同标准过审。同一原则适用于所有用户文本直接落库的入口：若 TopicService 开放用户自建选题，标题在建题处同样先过 `safetyCheck`（四路系统来源的选题产自已过审的 LLM 输出/卡片，不重复审）。
   - B 层卡新建/编辑时同步调 `AiClient.embed` 写 `embedding` 列（PRD §7.4 立即生效）；A/C 层不算向量。
   - 删除保护：删除前查 `card_citation` 引用数，`>0` 时返回引用数要求二次确认（`?force=true` 才软删 `deleted=true`）；编辑 B 层内容时旧值写 `card_history`。
 
@@ -824,7 +845,7 @@ void deleteWithCitationsRequiresForce() {
 
 - [ ] **Step 2: 运行确认失败** — Run: `./mvnw test -Dtest=KbCardServiceTest` → FAIL。
 
-- [ ] **Step 3: 实现 CRUD + embedding 同步 + 删除保护。** A/C 层 `embedding` 传 null；B 层调 `AiClient.embed` 后用 MyBatis 写 `vector` 列（自定义 TypeHandler 把 `float[]` 转 pgvector 字面量 `'[...]'`）。
+- [ ] **Step 3: 实现 CRUD（含 UGC 过审）+ embedding 同步 + 删除保护。** `create`/`update` 先 `AiClient.safetyCheck`，不安全抛 `CONTENT_BLOCKED`；A/C 层 `embedding` 传 null；B 层调 `AiClient.embed` 后用 MyBatis 写 `vector` 列（自定义 TypeHandler 把 `float[]` 转 pgvector 字面量 `'[...]'`）。
 
 - [ ] **Step 4: 运行确认通过** — Run: `./mvnw test -Dtest=KbCardServiceTest` → PASS。
 
@@ -851,7 +872,18 @@ git commit -m "feat: knowledge base CRUD (embedding sync, citation-guarded delet
 **Interfaces:**
 - Consumes: `llm.chat`、`rag.embedding.embed`、`safety.check`、`db`。
 - Produces:
-  - `rag/retrieve.py`：`async def retrieve_b_cards(user_id, query, k=5, max_distance=0.25) -> list[Card]`，pgvector `ORDER BY embedding <=> $query_vec` 且 `WHERE (embedding <=> $query_vec) <= 0.25`。**注意 `<=>` 返回余弦「距离」不是相似度**：距离 ≤ 0.25 才等价于相似度 ≥ 0.75，阈值方向别写反（最常见的 RAG 翻车点）。
+  - `rag/retrieve.py`：`async def retrieve_b_cards(user_id, query, k=5, max_distance=0.25) -> list[Card]`。SQL **必须带全部过滤条件**（漏掉 `user_id` 会跨用户召回别人的 B 层卡注入 prompt 并写进 `card_citation`——数据泄漏事故，照抄勿删）：
+
+```sql
+SELECT id, card_type, title, content
+FROM kb_card
+WHERE user_id = $1 AND layer = 'B' AND deleted = false
+  AND (embedding <=> $query_vec) <= 0.25
+ORDER BY embedding <=> $query_vec
+LIMIT 5
+```
+
+    **注意 `<=>` 返回余弦「距离」不是相似度**：距离 ≤ 0.25 才等价于相似度 ≥ 0.75，阈值方向别写反（最常见的 RAG 翻车点）。`tests/test_retrieve.py` 须含一条「用户 A 的 query 不召回用户 B 的卡」断言。
   - `POST /ai/script_gen {user_id, topic:{title,rationale}, profile:{...A层全量}, platform}` → 同步返回 `{hook, body, cta, cited_card_ids:[...]}` **或** `{blocked:true}`（内容安全命中且重写仍命中）。**三段每段是句数组 `{sentences:[{idx,text}]}`**——生成时就让 GLM 按 JSON schema 逐句输出（逐句编辑的数据基础，Java 原样落 JSONB）。流程：注入 A 层全量 + RAG 取 B 层 top5 → GLM 生成结构化三段 → `safety.check`，命中则重写一次再查，仍命中返回 blocked。**无流式。**
   - `POST /ai/rewrite_sentence {sentence, section, full_script, profile}` → `{text}` **或** `{blocked:true}`：单句「换个说法」——带上整稿与定位档案做上下文保持口吻连贯，走轻量档（skill=`rewrite_sentence`），产出过 `safety.check`。
 
@@ -907,7 +939,7 @@ git commit -m "feat(ai): RAG retrieval + script generation (sentence-structured)
 - Produces:
   - `POST /api/scripts/generate {topicId, platform}` → 走设计文档 §4.1 事务链，**顺序解决「扣费 biz_id 从哪来」**：① 先插一行 `script(review_state='generating')` 拿到 `scriptId`（扣费流水的 biz_id 必须在扣费前就存在且稳定，退款幂等全靠它）；② 独立短事务 `deduct(uid,1,"generate",scriptId)`；③ **事务外**调 `AiClient.scriptGen`；④ 成功→回填 hook/body/cta、置 `draft`、写 `card_citation` 返回；失败（超时/异常/解析失败/blocked）→ 占位行置 `failed`、`refund(uid,1,"generate",scriptId)`、抛 `AI_FAILED`/`CONTENT_BLOCKED`。
   - **同选题免扣**：同 `topic_id` 已有**非 generating/failed** 的成功稿则不扣（PRD §4.2；失败占位行不算「成功生成过」）。
-  - 三平台版本**按需生成**：默认主平台，切平台再生成、同选题不加扣。
+  - 三平台版本**按需生成**：`platform` 参数缺省时取 `app_user.default_platform`（Task 0.2/0.4 已建列与更新入口，PRD §4.2「默认生成用户主平台版本」），切平台再生成、同选题不加扣。
   - 稿件管理（设计文档 §2.1 script 模块）：`GET /api/scripts?state=` 列表、`GET /api/scripts/{id}` 详情、`PUT /api/scripts/{id}/sentence {section, idx, text}` **单句手改**（改 JSONB 句数组中对应句后整列更新）。
   - `POST /api/scripts/{id}/rewrite-sentence {section, idx}` **单句 AI 重写**：取该句 + 整稿 + 定位档案调 `AiClient.rewriteSentence` → 返回新句给前端预览，用户确认后走上面的单句手改接口落库。**不扣额度**（轻量档成本可忽略；被刷再限流，V1.1）；`blocked` 翻译为 `CONTENT_BLOCKED`，原句保留。
 
@@ -1016,15 +1048,15 @@ git commit -m "feat: local SimHash dedup warning (non-blocking) on generated scr
 - Test: `sks-server/src/test/java/com/sks/topic/TopicServiceTest.java`
 
 **Interfaces:**
-- Consumes: `AiClient.hotBoard`（P3 Task 3.2 产出 `GET /ai/hot_board`）、`AiClient.embed`（Task 1.1，热点匹配打分用）、`KbCardService`（faq 路取 FAQ 卡）、拆解结果（benchmark 路，Task 3.3 完成拆账号后把规律归纳中的选题建议写 `topic(source=benchmark)`）、复盘续集（replay 路，P4）。
+- Consumes: `AiClient.hotBoard`（**本任务先在 `AiClient` 声明该方法并以桩实现（返回空列表 + WARN 日志），保证 P1 可编译可测（测试 mock 之）；真实实现调 Python `GET /ai/hot_board`，在 P3 Task 3.3 Step 3.5 接线**）、`AiClient.embed`（Task 1.1，热点匹配打分用）、`KbCardService`（faq 路取 FAQ 卡）、拆解结果（benchmark 路，Task 3.3 完成拆账号后把规律归纳中的选题建议写 `topic(source=benchmark)`）、复盘续集（replay 路，P4）。
 - Produces:
   - `GET /api/topics?source=` 聚合四路：`hot`（TikHub 热点榜定时拉取 → 对热点标题调 `AiClient.embed` 算向量，Java 直接 SQL 在 `kb_card` B 层上做 pgvector 余弦匹配打分——**复用既有 embed 接口 + 数据库，不新增 Python 匹配端点**）、`faq`（用户 FAQ 卡转选题）、`benchmark`（拆解产出转选题）、`replay`（爆款续集）。
   - 按内容支柱配比排序（`pillar`）。
-  - `HotTopicJob`：`@Scheduled` 定时拉热点榜入 `topic(source=hot)`。**此 Job 依赖 P3 的 `hot_board`，实现顺序上放 P3 之后接线，但选题聚合的其余三路不依赖 P3。**
+  - `HotTopicJob`：`@Scheduled` 定时拉热点榜入 `topic(source=hot)`。**P1 阶段 `AiClient.hotBoard` 是空桩（返回空列表），Job 跑了也不入库、不报错；真实接线在 P3 Task 3.3 Step 3.5。选题聚合的其余三路不依赖 P3。**
 
 - [ ] **Step 1: 写 `TopicServiceTest`（先失败）** — 断言四路来源都能查询、按 pillar 排序、hot 路 mock 热点榜后入库。
 - [ ] **Step 2: 运行确认失败** — Run: `./mvnw test -Dtest=TopicServiceTest` → FAIL。
-- [ ] **Step 3: 实现四路聚合 + HotTopicJob（hot 路接线待 P3 datasource 就绪）。**
+- [ ] **Step 3: 实现四路聚合 + HotTopicJob（`AiClient.hotBoard` 先建空桩，hot 路真实接线待 P3）。**
 - [ ] **Step 4: 运行确认通过** — Run: `./mvnw test -Dtest=TopicServiceTest` → PASS。
 - [ ] **Step 5: Commit**
 
@@ -1054,7 +1086,7 @@ git commit -m "feat: topic library four-source aggregation (hot/faq/benchmark/re
 - Consumes: `llm.chat`（skill=`interview`）、LangGraph `PostgresSaver`（同一个库）。
 - Produces:
   - LangGraph 状态机节点：`guess_persona → await_feedback → ask(5-8轮) → summarize → await_confirm`。用 `PostgresSaver` 持久化（**包为 `langgraph-checkpoint-postgres`，psycopg 连接**；`main.py` 启动时调 `checkpointer.setup()` 自建检查点表——这是「Python 不做迁移」的唯一例外，检查点表归 LangGraph 私有），`thread_id = f"{user_id}:{session_id}"`，天然支持断点续答（PRD §11.4）。
-  - `POST /ai/interview/step {user_id, session_id, user_reply?}` → 同步返回 `{stage, question?, profile_draft?, done:bool}`。每轮一问一答，一次请求。`user_reply` 先过 `safety.check`（**UGC 过审**，设计文档 §5.1），命中返回 `{blocked:true}`，由 Java 提示用户修改后重答（不推进状态机）；LLM 生成的问题与档案文本返回前同样过 `safety.check`（全局约束：展示给用户的 LLM 产出必须过审）。
+  - `POST /ai/interview/step {user_id, session_id, user_reply?, materials?}` → 同步返回 `{stage, question?, profile_draft?, done:bool}`。每轮一问一答，一次请求。**首轮素材入口（PRD §5.2 校准第一步「贴素材 → AI 先猜一版人设」）**：首次请求（无 checkpoint）时 `materials` 字段携带用户粘贴的素材文本（主页链接说明/过往文案/朋友圈长文，纯文本拼接），`guess_persona` 节点以此为输入猜人设；`materials` 为空也允许（AI 按行业/身份冷启动猜）。`materials` 与 `user_reply` 都是 UGC，先过 `safety.check`（设计文档 §5.1），命中返回 `{blocked:true}`，由 Java 提示用户修改后重答（不推进状态机）；LLM 生成的问题与档案文本返回前同样过 `safety.check`（全局约束：展示给用户的 LLM 产出必须过审）。
   - `GET /ai/interview/result?thread_id=` → **只读**从 checkpoint 取 `summarize` 产出（不推进状态机）——Java 的 `confirm` 靠它取数，避免「确认时再推一步状态机」的数据流断裂。
   - `POST /ai/asr`（multipart 音频，≤60s）→ `{text}`：调阿里云一句话识别同步转文字，供访谈/补卡的语音回答用（Task 2.2 消费）。识别失败返回错误码，由 Java 提示用户改用文字输入。
   - `summarize` 阶段产出 `{profile:{人设,人群,差异化,变现,红线,支柱配比}, a_cards:[{card_type,title,content}]}`。
@@ -1099,7 +1131,7 @@ git commit -m "feat(ai): positioning interview LangGraph state machine with resu
 **Interfaces:**
 - Consumes: `AiClient.interviewStep`、`AiClient.interviewResult(threadId)`（Task 2.1 只读端点）、`AiClient.asr(audioBytes)`（Task 2.1 `/ai/asr`）、`KbCardService.create`（A 层卡）。
 - Produces:
-  - `POST /api/profile/interview {sessionId, reply?}` → 透传 Python，**不扣费**；返回当前问题/进度。Java 记录「校准进行中，第 X 步」供工作台横幅（PRD §11.4）。
+  - `POST /api/profile/interview {sessionId, reply?, materials?}` → 透传 Python（首轮带 `materials`——用户粘贴的素材文本，见 Task 2.1；前端校准页第一步即「贴素材」输入框），**不扣费**；返回当前问题/进度。Java 记录「校准进行中，第 X 步」供工作台横幅（PRD §11.4）。
   - `POST /api/profile/voice`（multipart 音频）→ `AiClient.asr` 转文字 → 文字作为该轮 reply 走 `interviewStep` 同一流程（转出文字先回显给用户确认再提交，识别错了可改）；ASR 失败提示改用文字输入，**不阻断访谈**。
   - `POST /api/profile/confirm {sessionId}` → 调 `AiClient.interviewResult` 从 checkpoint 只读取 summarize 产出（不再推状态机），`@Transactional` 写 `positioning_profile(active=true, version++)` + 批量建 A 层卡；旧 active 档案置 `active=false` 留历史。
   - `ProfileService.activeProfile(uid)`：供 P1 script_gen 注入 A 层全量（替换 P1 的空桩）。
@@ -1190,7 +1222,7 @@ git commit -m "feat(ai): TikHub client (api.tikhub.dev) + ASR transcription pipe
   - `GET /ai/hot_board` → 热点榜列表（封装 `tikhub.hot_board`；Task 1.7 的 `HotTopicJob` 消费——该 Job 在 P1 已建、留到此处接线）。
   - `POST /ai/analyze/video/text {task_id, transcript}` → **同步**返回单条结构化 `{structure, why_hot, framework, diff_hint}`（粘文案版，仅 LLM；`transcript` 为 UGC，先过 `safety.check`；结构化文本产出返回前同样过审）。
   - `POST /ai/analyze/video/link {task_id, url}` → 立即 202，后台跑「下载音频 → ASR → 结构化」并按 `task_id` 直写 `analyze_task`（`status/progress/result`）。
-  - `POST /ai/analyze/account {task_id, url}` → 立即 202，后台跑：TikHub 取 TOP20 → 逐条下载音频转写 → 逐条结构化（`account_analyze_item`）写 `benchmark_video` 行 → 规律归纳（`account_analyze_summary`，文本产出过 `safety.check`）→ 迁移建议 → 结果三层写 `analyze_task.result`，TOP20 明细写 `benchmark_video`。进度分段更新 `progress`，**每次写进度必须显式 `SET updated_at = now()`（PG 没有自动更新语义，Java 的超时判定靠这列）**。异常写 `analyze_task.status='partial'/'failed'` + `error`。**状态直写同一库所以重启不丢「数据」；但 `BackgroundTasks` 是进程内执行，Python 重启后任务不会自动续跑——靠 Java 轮询的超时/停滞判定兜底退款（Task 3.3）。**
+  - `POST /ai/analyze/account {task_id, url}` → 立即 202，后台跑：TikHub 取 TOP20 → 逐条下载音频转写 → 逐条结构化（`account_analyze_item`）写 `benchmark_video` 行 → 规律归纳（`account_analyze_summary`，文本产出过 `safety.check`）→ 迁移建议 → 结果三层写 `analyze_task.result`，TOP20 明细写 `benchmark_video`。进度分段更新 `progress`——**`progress` 语义 = 已完成条数/总条数×100（整数），不是阶段进度**（例：20 条完成 10 条即 50，「转写完但结构化没做」的条不算完成；Java 按比例退款的数学依赖此口径）；**每次写进度必须显式 `SET updated_at = now()`（PG 没有自动更新语义，Java 的超时判定靠这列）**。异常写 `analyze_task.status='partial'/'failed'` + `error`。**状态直写同一库所以重启不丢「数据」；但 `BackgroundTasks` 是进程内执行，Python 重启后任务不会自动续跑——靠 Java 轮询的超时/停滞判定兜底退款（Task 3.3）。**
 
 - [ ] **Step 1: 写 `test_account_analyze.py`（先失败，mock tikhub/transcribe/llm）** — 断言：跑完后 `analyze_task.status='done'`、`benchmark_video` 有 N 行、`result` 含账号画像/规律归纳/迁移建议三层；某条转写抛错时 `status='partial'` 且 `progress` 反映已完成比例。
 
@@ -1219,10 +1251,10 @@ git commit -m "feat(ai): video/account analyze skills writing progress to analyz
 **Interfaces:**
 - Consumes: `CreditService.deduct/refund`、`AiClient.analyzeAccount/analyzeVideoLink/analyzeVideoText/precheck`。
 - Produces:
-  - `POST /api/analyze/video {mode:text|link, payload}`：text 同步扣 1 直接返回；link 异步。
+  - `POST /api/analyze/video {mode:text|link, payload}`：text 同步扣 1 直接返回；link 异步。**text 模式虽同步，也必须有稳定 biz_id（套 Task 1.4 占位行同款模式）**：① 先插一行 `analyze_task(task_type='video', status='queued', input=transcript)` 拿 `taskId`；② `deduct(uid, 1, "analyze_video", taskId)`；③ 事务外调 `AiClient.analyzeVideoText(taskId, transcript)`；④ 成功→结果写 `analyze_task(status='done', result)` 返回；失败/blocked→`status='failed'` + `refund(uid, 1, "analyze_video", taskId)`。没有这一行占位任务，同步路径的退款幂等（`(biz_id,biz_type,type)` 唯一约束）就没有可用的 biz_id。link 模式与拆账号同（下条）。
   - `POST /api/analyze/account {url}`：预检（调 `/ai/analyze/precheck`）→ 扣 `max(1, min(10, floor(N/2)))`（下限 1 防 N=1 免费白嫖；开始前明示）→ 建 `analyze_task(queued)` → 调 Python 异步接口（传 `task_id`）→ 返回 `taskId`。预检失败或 `N=0` 不扣费直接拒绝。
   - `GET /api/analyze/tasks/{id}` → 前端轮询进度/结果。
-  - `AnalyzeTaskPoller`：`@Scheduled(fixedDelay=5000)` **轮询范围覆盖三种情况（缺一都会吞用户额度）**：① `running` 超时（5 分钟无 `updated_at` 更新）→ 判 `failed` 全额退；② `partial`（部分失败**终态**，Python 写完即不再变化）→ 按未完成条数比例退**一次**（幂等约束天然挡住二次退款，退过即跳过）；③ **stale `queued`**（受理后 1 分钟未转 `running`，说明 Python 返回 202 后即崩）→ 判 `failed` 全额退。
+  - `AnalyzeTaskPoller`：`@Scheduled(fixedDelay=5000)` **轮询范围覆盖三种情况（缺一都会吞用户额度）**：① `running` 超时（5 分钟无 `updated_at` 更新）→ 判 `failed` 全额退；② `partial`（部分失败**终态**，Python 写完即不再变化）→ 按未完成条数比例退**一次**：`refundN = charged × (100 - progress) / 100`（取整；`progress` 语义 = 已完成条数比例，见 Task 0.2 schema 注释与 Task 3.2，若被理解成阶段进度退款金额就错了）（幂等约束天然挡住二次退款，退过即跳过）；③ **stale `queued`**（受理后 1 分钟未转 `running`，说明 Python 返回 202 后即崩）→ 判 `failed` 全额退。
   - 拆账号完成（done）后，把规律归纳中的选题建议写入 `topic(source=benchmark)`（Task 1.7 benchmark 路的数据来源）。
   - 抓取阶段整体失败（`DataSourceError`）→ 全额退款 + 提示改用「拆视频（粘链接/粘文案）」逐条拆解（PRD §11.3 降级路径；MVP 不做独立的手动粘贴视频列表批量拆入口）。
 
@@ -1250,6 +1282,8 @@ void partialTaskRefundsUnfinishedProportion() {
 - [ ] **Step 2: 运行确认失败** — Run: `./mvnw test -Dtest=AnalyzeServiceTest` → FAIL。
 
 - [ ] **Step 3: 实现编排 + 轮询调度 + 按比例退款逻辑。** 退款走 `refund(uid, refundN, "analyze_account", taskId)` 幂等保证不重复退。
+
+- [ ] **Step 3.5: 接线 `HotTopicJob` → `AiClient.hotBoard`。** 把 Task 1.7 留的空桩替换为真实实现（调 Python `GET /ai/hot_board`，Task 3.2 已产出），验证 `HotTopicJob` 跑一轮后 `topic(source=hot)` 有数据（`TopicServiceTest` 的 hot 路用例改用真实客户端签名 + mock 响应）。
 
 - [ ] **Step 4: 运行确认通过** — Run: `./mvnw test -Dtest=AnalyzeServiceTest` → PASS。
 
@@ -1308,7 +1342,7 @@ git commit -m "feat(ai): attribution skill (single + weekly report)"
 - Consumes: `ScriptMapper`、`AiClient.cardGen`（Task 1.5，爆款素材→C 层卡）、`KbCardService.create`（C 层卡落库）、`TopicService.create`（source=replay）。
 - Produces（客户端方法）: `AiClient.attributionSingle/attributionWeekly`（对应 Task 4.1 的两个 Python 端点）。
 - Produces:
-  - 状态迁移规则（**全部 Java 判定，无 AI 参与判态**）：采用→`pending`；登记链接→`tracking`；填播放量后与「近 30 天均值 × 阈值（默认 3，可调）」比较→ `hot`/`plain`/`flop`；生成 48h 未采用→`rejected`（`RejectSweeper` 扫描）。
+  - 状态迁移规则（**全部 Java 判定，无 AI 参与判态**）：采用→`pending`；登记链接→`tracking`；填播放量后按**双阈值带状区间**判态（PRD §8 plain = 均值 ± 范围，需要上下两个界）：`play >= avg × hotThreshold`（默认 3）→ `hot`；`play < avg × flopThreshold`（默认 0.5）→ `flop`；两者之间 → `plain`。两个阈值均可配（读配置）。生成 48h 未采用→`rejected`（`RejectSweeper` 扫描）。
   - `ReviewStateMachine.next(current, event, ctx)`：纯函数，非法迁移抛异常。
   - `POST /api/review/{scriptId}/adopt`、`/track {url}`、`/play {count}`、`/attribute`、`/feedback {reason}`。
   - `hot`「标记爆款素材」→ 调 card_gen 生成 C 层卡；「出续集」→ 写选题库（source=replay）。`flop`「看归因」→ 调 attribution（不扣费）。`rejected` 回访 → 反哺选题/口吻偏好。
@@ -1318,12 +1352,16 @@ git commit -m "feat(ai): attribution skill (single + weekly report)"
 ```java
 @Test
 void playCountAboveThresholdBecomesHot() {
-    String s = ReviewStateMachine.classify(/*play*/ 9000, /*avg30d*/ 2000, /*threshold*/ 3);
+    String s = ReviewStateMachine.classify(/*play*/ 9000, /*avg30d*/ 2000, /*hotThreshold*/ 3, /*flopThreshold*/ 0.5);
     assertEquals("hot", s); // 9000 >= 2000*3
 }
 @Test
-void playCountBelowMeansFlop() {
-    assertEquals("flop", ReviewStateMachine.classify(500, 2000, 3));
+void playCountWithinBandIsPlain() {
+    assertEquals("plain", ReviewStateMachine.classify(1500, 2000, 3, 0.5)); // 1000 <= 1500 < 6000
+}
+@Test
+void playCountBelowLowerBoundMeansFlop() {
+    assertEquals("flop", ReviewStateMachine.classify(500, 2000, 3, 0.5)); // 500 < 2000*0.5
 }
 @Test
 void illegalTransitionThrows() {
@@ -1333,7 +1371,7 @@ void illegalTransitionThrows() {
 ```
 
 - [ ] **Step 2: 运行确认失败** — Run: `./mvnw test -Dtest=ReviewStateMachineTest` → FAIL。
-- [ ] **Step 3: 实现状态机 + Sweeper + 各端点。** `classify` 阈值可配（读配置，默认 3）。`RejectSweeper` `@Scheduled` 扫 **`draft`（生成后未采用）** 超 48h 转 `rejected`——注意不能扫 `pending`（那是已采用待登记的稿子）。
+- [ ] **Step 3: 实现状态机 + Sweeper + 各端点。** `classify` 双阈值可配（读配置，默认 hot=3 / flop=0.5）。`RejectSweeper` `@Scheduled` 扫 **`draft`（生成后未采用）** 超 48h 转 `rejected`——注意不能扫 `pending`（那是已采用待登记的稿子）。
 - [ ] **Step 4: 运行确认通过** — Run: `./mvnw test -Dtest=ReviewStateMachineTest` → PASS。
 - [ ] **Step 5: Commit**
 
