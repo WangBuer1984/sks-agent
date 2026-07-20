@@ -2,7 +2,21 @@
   "permissions": {
     "allow": [
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(docker version *)",
+      "Bash(docker compose *)",
+      "Bash(java -version)",
+      "Bash(colima version *)",
+      "Bash(colima list *)",
+      "Bash(brew --version)",
+      "Bash(/usr/libexec/java_home -V)",
+      "Bash(pyenv --version)",
+      "Bash(docker-compose --version)",
+      "Bash(mvn -version)",
+      "Bash(python3.12 --version)",
+      "Bash(uv --version)",
+      "Bash(npm --version)"
     ]
   }
 }

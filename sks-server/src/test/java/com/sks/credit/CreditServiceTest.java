@@ -104,6 +104,7 @@ class CreditServiceTest extends AbstractDbTest {
             });
         }
         latch.await();
+        pool.shutdown();
         assertEquals(10, ok.get()); // 恰好 10 次成功
         assertEquals(0, creditService.balance(uid)); // 绝不超扣为负
     }
@@ -173,5 +174,18 @@ class CreditServiceTest extends AbstractDbTest {
         creditService.ensureAccount(uid);
         creditService.ensureAccount(uid); // 重复调用不报错、不叠加
         assertEquals(0, creditService.balance(uid));
+    }
+
+    // 回归：refund 对未建账用户调用——必须建账 + 正确加额度，且不留下阻塞未来重试的孤儿流水。
+    // 修复前：refund 不 ensureAccount、忽略 addBalance 返回值，缺账时流水写入但余额未动，未来同 biz_id 合法重试被永久阻塞。
+    @Test
+    void refundOnMissingAccountAppliesAndDoesNotLeaveOrphanLedger() {
+        // 未建账、无先前 deduct，直接退款。
+        creditService.refund(uid, 5, "generate", "orphan1");
+        // 账户被自动建立且余额 == n（修复前为静默 0）。
+        assertEquals(5, creditService.balance(uid));
+        // 同 biz_id 第二次退款应为幂等 no-op，不重复加额度（孤儿流水不存在，重试不被阻塞）。
+        creditService.refund(uid, 5, "generate", "orphan1");
+        assertEquals(5, creditService.balance(uid));
     }
 }

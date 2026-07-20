@@ -67,14 +67,17 @@ public class CreditService {
     /**
      * 幂等退款：把 {@code n} 加回余额 + 写 {@code ledger(delta=+n, type='refund')}。
      *
-     * <p>幂等键 = {@code (biz_id, biz_type, 'refund')}。先查已存在则 return；否则<b>先插流水</b>，
-     * 唯一约束冲突即并发重复——输家尚未改余额，catch 静默 return；赢家再 addBalance。重复调用静默 no-op。
+     * <p>幂等键 = {@code (biz_id, biz_type, 'refund')}。先查已存在则 return；否则 {@link #ensureAccount}
+     * （首退前建账，可重复；与 {@link #credit} 一致，让退款自给自足、永不因缺账而行静默失败）→
+     * <b>先插流水</b>，唯一约束冲突即并发重复——输家尚未改余额，catch 静默 return；赢家再 addBalance。
+     * 重复调用静默 no-op。
      */
     @Transactional
     public void refund(long userId, int n, String bizType, String bizId) {
         if (ledgerMapper.countByBizKey(bizId, bizType, "refund") > 0) {
             return;
         }
+        ensureAccount(userId);
         CreditLedger row = new CreditLedger();
         row.setUserId(userId);
         row.setDelta(n);
