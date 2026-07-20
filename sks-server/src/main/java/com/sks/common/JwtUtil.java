@@ -4,6 +4,9 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Date;
 import java.util.Set;
 import javax.crypto.SecretKey;
 
@@ -47,14 +50,23 @@ public class JwtUtil {
         this.adminKey = Keys.hmacShaKeyFor(adminBytes);
     }
 
-    /** 按 audience 选取密钥签发 token，subject=用户/管理员 id，tokenVersion 写入 claim 供后续踢人。 */
+    /**
+     * 按 audience 选取密钥签发 token，subject=用户/管理员 id，tokenVersion 写入 claim 供后续踢人。
+     *
+     * <p>过期时间按 audience 内置：C 端 7 天、管理端 24h（Task 0.6 决策 #1）。不改变 3 参签名（Task
+     * 0.4 AuthService.login 已锁定该契约），把 expiry 作为 JwtUtil 内部关注点。jjjwt 的 {@link #parse}
+     * 在 exp 已过期时自动抛 {@link io.jsonwebtoken.ExpiredJwtException}（RuntimeException 子类），过滤器
+     * 捕获后按 401 处理。
+     */
     public String issue(long subjectId, String audience, int tokenVersion) {
         SecretKey key = keyForAudience(audience);
+        Duration expiry = "admin".equals(audience) ? Duration.ofHours(24) : Duration.ofDays(7);
         // jjjwt 0.12.5: 用 setAudience 设置单值 aud；audience() 是 AudienceCollection 的 no-arg getter。
         return Jwts.builder()
                 .subject(String.valueOf(subjectId))
                 .setAudience(audience)
                 .claim("ver", tokenVersion)
+                .expiration(Date.from(Instant.now().plus(expiry)))
                 .signWith(key)
                 .compact();
     }
