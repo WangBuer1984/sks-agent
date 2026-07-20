@@ -1,0 +1,27 @@
+# Secrets / local env (never commit)
+.env
+
+# Java / Maven
+**/target/
+*.class
+*.jar
+!**/mvnw
+!**/mvnw.cmd
+!**/.mvn/**
+
+# Python
+**/__pycache__/
+*.pyc
+.venv/
+.python-version
+
+# Node / Frontend
+**/node_modules/
+**/dist/
+**/.vite/
+
+# Editor / OS
+*.log
+.idea/
+.vscode/
+.DS_Store
