@@ -6,16 +6,17 @@ export default {
       colors: {
         // 纸感色板（后续 task 替换为品牌定稿）
         paper: {
-          base: '#faf8f3',
+          base: '#f4f1e9',
           card: '#ffffff',
           ink: '#2b2b2b',
           muted: '#7a7770',
           line: '#e7e3d8',
-          accent: '#c9a14a',
+          primary: '#8a5a2b',
         },
       },
       fontFamily: {
         sans: ['system-ui', '-apple-system', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
+        serif: ['Noto Serif SC', 'serif'],
       },
     },
   },

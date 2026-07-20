@@ -13,3 +13,9 @@ body {
   margin: 0;
   font-family: theme('fontFamily.sans');
 }
+
+@layer base {
+  h1, h2, h3 {
+    @apply font-serif;
+  }
+}

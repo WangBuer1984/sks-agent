@@ -87,6 +87,11 @@ services:
         condition: service_healthy
     networks:
       - sks-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 networks:
   sks-net:

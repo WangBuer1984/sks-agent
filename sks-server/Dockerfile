@@ -1,6 +1,7 @@
 # 构建阶段：用 JDK + Maven Wrapper（不依赖全局 mvn）
 FROM eclipse-temurin:21-jdk AS build
 WORKDIR /build
+RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/*
 COPY .mvn ./.mvn
 COPY mvnw mvnw.cmd pom.xml ./
 RUN chmod +x mvnw && ./mvnw -B -q -DskipTests dependency:go-offline
