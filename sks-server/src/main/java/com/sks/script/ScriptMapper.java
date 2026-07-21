@@ -1,6 +1,7 @@
 package com.sks.script;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
@@ -155,4 +156,33 @@ public interface ScriptMapper extends BaseMapper<Script> {
     /** draft → rejected（RejectSweeper）。守卫 review_state='draft'——幂等，重复扫对已 rejected 行 no-op。 */
     @Update("UPDATE script SET review_state = 'rejected', updated_at = now() WHERE id = #{id} AND review_state = 'draft'")
     int markRejected(@Param("id") long id);
+
+    // ---- 周归因（§4.4 WeeklyReportJob，Task 4.3）----
+
+    /**
+     * 某周（ISO 周，{@code weekStart} Monday 起，半开区间 [{@code weekStart}, {@code weekStart}+7d)）<b>有已复盘稿</b>
+     * 的用户 id 列表（去重）。仅含 {@code hot/plain/flop}——这三态有 play_count + review_state，是周归因 LLM
+     * 归纳的输入；draft/pending/tracking/generating/failed 无 play_count，不参与周归因。
+     *
+     * <p>{@code created_at::date >= weekStart AND created_at::date < weekStart + 7}——DATE 与 TIMESTAMPTZ 比较
+     * 时 PG 自动 cast，结果按本地日期归属该 ISO 周。
+     */
+    @Select(
+            "SELECT DISTINCT user_id FROM script WHERE review_state IN ('hot','plain','flop') "
+                    + "AND created_at::date >= #{weekStart} AND created_at::date < (#{weekStart} + 7)")
+    List<Long> findUserIdsWithFinalizedScriptsInWeek(@Param("weekStart") LocalDate weekStart);
+
+    /**
+     * 取某用户某周的已复盘稿（{@code hot/plain/flop}）——含 hook/body/cta（供 flatten 成 script 纯文本）+
+     * play_count + review_state + created_at。半开区间 [{@code weekStart}, {@code weekStart}+7d)。
+     *
+     * <p>供 {@link com.sks.review.WeeklyReportJob} 聚合成 {@code scripts} 数组（对齐 Task 4.1
+     * {@code WeeklyScriptItem} 的 script/play_count/review_state/baseline 字段）。
+     */
+    @Select(
+            "SELECT * FROM script WHERE user_id = #{userId} AND review_state IN ('hot','plain','flop') "
+                    + "AND created_at::date >= #{weekStart} AND created_at::date < (#{weekStart} + 7) "
+                    + "ORDER BY created_at ASC, id ASC")
+    List<Script> findFinalizedByUserAndWeek(
+            @Param("userId") long userId, @Param("weekStart") LocalDate weekStart);
 }

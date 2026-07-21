@@ -6,6 +6,7 @@ import KB from './pages/KB';
 import Create from './pages/Create';
 import Calibrate from './pages/Calibrate';
 import Analyze from './pages/Analyze';
+import Review from './pages/Review';
 import AdminLogin from './pages/admin/AdminLogin';
 import AdminConsole from './pages/admin/AdminConsole';
 import { useAuthStore } from './store/auth';
@@ -38,6 +39,7 @@ export default function AppRoutes() {
       <Route path="/create" element={<RequireUser><Create /></RequireUser>} />
       <Route path="/calibrate" element={<RequireUser><Calibrate /></RequireUser>} />
       <Route path="/analyze" element={<RequireUser><Analyze /></RequireUser>} />
+      <Route path="/review" element={<RequireUser><Review /></RequireUser>} />
       <Route path="/admin/login" element={<AdminLogin />} />
       <Route path="/admin" element={<RequireAdmin><AdminConsole /></RequireAdmin>} />
       <Route path="*" element={<Navigate to="/" replace />} />
