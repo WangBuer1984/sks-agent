@@ -484,6 +484,82 @@ public class AiClient {
         return post("/ai/analyze/account", new AccountRequest(taskId, url), AnalyzeAccepted.class);
     }
 
+    // ---- attribution（Task 4.1 Python 端点 / Task 4.2 Java 客户端）----
+
+    /**
+     * Python {@code POST /ai/attribution/single} 请求体（见 AttributionSingleRequest）。
+     *
+     * <p>字段名用 {@code @JsonProperty} 对齐 Python snake_case（{@code play_count}）。{@code script} 为
+     * 扁平化的稿件纯文本（hook/body/cta 句子拼接），{@code baseline} 为 Java 侧算好的近 30 天均值。
+     */
+    public record AttributionSingleRequest(
+            String script,
+            @JsonProperty("play_count") int playCount,
+            double baseline) {}
+
+    /**
+     * Python {@code POST /ai/attribution/single} 响应（见 AttributionSingleResponse）。
+     *
+     * <p>成功返回 {@code {diagnosis, suggestions}}；命中安全返回 {@code {blocked:true}}
+     * （diagnosis/suggestions 缺省 → null/empty）。与 {@link ScriptGenResult} 同模式：<b>不在此处理 blocked</b>
+     * ——交由 {@link com.sks.review.ReviewService#attribute} 翻译为 {@link ErrorCode#CONTENT_BLOCKED}
+     * （归因 FREE，无退款编排，直接抛即可）。
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record AttributionSingleResult(
+            String diagnosis, List<String> suggestions, boolean blocked) {}
+
+    /**
+     * 调 Python {@code POST /ai/attribution/single}（flop 归因，<b>FREE</b> 不扣费）。
+     *
+     * <p>非 2xx（含 token 不匹配 / 超时）由基座 {@link #post} 翻译为 {@link BizException}(AI_FAILED)。
+     * <b>不</b>在此处理 {@code blocked}——交由 {@link com.sks.review.ReviewService#attribute} 抛
+     * {@link ErrorCode#CONTENT_BLOCKED}。归因<b>不</b>改复盘态（no AI judges state）——只返回诊断文本。
+     */
+    public AttributionSingleResult attributionSingle(String script, int playCount, double baseline) {
+        return post(
+                "/ai/attribution/single",
+                new AttributionSingleRequest(script, playCount, baseline),
+                AttributionSingleResult.class);
+    }
+
+    /**
+     * Python {@code POST /ai/attribution/weekly} 请求体（见 AttributionWeeklyRequest）。
+     *
+     * <p>{@code scripts} 为 Java 组装的 dict 列表（Python 放行额外字段 title 等，仅取已知字段）。
+     * 字段名 {@code @JsonProperty("user_id")} 对齐 Python snake_case。每条 dict 含
+     * {@code script/play_count/review_state/baseline}（见 Python WeeklyScriptItem）。
+     */
+    public record AttributionWeeklyRequest(
+            @JsonProperty("user_id") long userId, List<Map<String, Object>> scripts) {}
+
+    /**
+     * Python {@code POST /ai/attribution/weekly} 响应（见 AttributionWeeklyResponse）。
+     *
+     * <p>成功返回 {@code {summary, wins, gaps, next_focus}}；命中安全返回 {@code {blocked:true}}。
+     * <b>不在此处理 blocked</b>——交由调用方（Task 4.3 周归因 job）翻译。周归因是定时聚合，
+     * <b>非</b>用户扣费路径。
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record AttributionWeeklyResult(
+            String summary,
+            List<String> wins,
+            List<String> gaps,
+            @JsonProperty("next_focus") String nextFocus,
+            boolean blocked) {}
+
+    /**
+     * 调 Python {@code POST /ai/attribution/weekly}（周归因，Task 4.3 周归因 job 消费）。
+     *
+     * <p>非 2xx 由基座 {@link #post} 翻译为 {@link BizException}(AI_FAILED)。{@code blocked} 交由调用方处理。
+     */
+    public AttributionWeeklyResult attributionWeekly(long userId, List<Map<String, Object>> scripts) {
+        return post(
+                "/ai/attribution/weekly",
+                new AttributionWeeklyRequest(userId, scripts),
+                AttributionWeeklyResult.class);
+    }
+
     // ---- 基座：headers + timeout + retry + error translation + MDC ----
 
     /**

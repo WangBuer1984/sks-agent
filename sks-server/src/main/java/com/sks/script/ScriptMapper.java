@@ -1,6 +1,7 @@
 package com.sks.script;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import java.time.OffsetDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
@@ -101,4 +102,57 @@ public interface ScriptMapper extends BaseMapper<Script> {
             @Param("userId") long userId,
             @Param("section") String section,
             @Param("json") String json);
+
+    // ---- 复盘状态机迁移（§4.4，Task 4.2）----
+    // 每个 UPDATE 带 review_state 守卫，确保纯函数 next() 校验后到 DB 落库期间态未被并发改；
+    // rows==0 → 并发改了态，调用方（ReviewService）抛 PARAM_INVALID。
+
+    /** draft → pending（采用）。守卫 review_state='draft'。 */
+    @Update(
+            "UPDATE script SET review_state = 'pending', updated_at = now() "
+                    + "WHERE id = #{id} AND user_id = #{userId} AND review_state = 'draft'")
+    int markPending(@Param("id") long id, @Param("userId") long userId);
+
+    /** pending → tracking（登记发布链接）+ 写 publish_url。守卫 review_state='pending'。 */
+    @Update(
+            "UPDATE script SET review_state = 'tracking', publish_url = #{url}, updated_at = now() "
+                    + "WHERE id = #{id} AND user_id = #{userId} AND review_state = 'pending'")
+    int markTracking(
+            @Param("id") long id, @Param("userId") long userId, @Param("url") String url);
+
+    /**
+     * tracking → hot/plain/flop（填播放量后判态）+ 写 play_count + data_source='manual'。
+     * 守卫 review_state='tracking'。state 由 {@link com.sks.review.ReviewStateMachine#classify} 决定。
+     */
+    @Update(
+            "UPDATE script SET review_state = #{state}, play_count = #{playCount}, "
+                    + "data_source = 'manual', updated_at = now() "
+                    + "WHERE id = #{id} AND user_id = #{userId} AND review_state = 'tracking'")
+    int markReviewState(
+            @Param("id") long id,
+            @Param("userId") long userId,
+            @Param("state") String state,
+            @Param("playCount") int playCount);
+
+    /**
+     * 近 30 天已复盘稿（hot/plain/flop 且 play_count 非空）的播放量均值（§4.4「近30天均值」baseline）。
+     *
+     * <p>无历史 → AVG 返回 NULL → COALESCE → 0；{@link com.sks.review.ReviewStateMachine#classify}
+     * 把 avg&lt;=0 视为无 baseline → plain（首条稿无历史可比对）。
+     */
+    @Select(
+            "SELECT COALESCE(AVG(play_count), 0) FROM script WHERE user_id = #{userId} "
+                    + "AND play_count IS NOT NULL AND review_state IN ('hot','plain','flop') "
+                    + "AND created_at >= now() - interval '30 days'")
+    double avgPlayCount30d(@Param("userId") long userId);
+
+    // ---- RejectSweeper（§4.4 48h 未采用 draft → rejected）----
+
+    /** 48h 前仍未采用的 draft 稿 id 列表（RejectSweeper 扫描）。<b>仅 draft</b>——pending 不被扫。 */
+    @Select("SELECT id FROM script WHERE review_state = 'draft' AND created_at < #{cutoff}")
+    List<Long> findDraftIdsOlderThan(@Param("cutoff") OffsetDateTime cutoff);
+
+    /** draft → rejected（RejectSweeper）。守卫 review_state='draft'——幂等，重复扫对已 rejected 行 no-op。 */
+    @Update("UPDATE script SET review_state = 'rejected', updated_at = now() WHERE id = #{id} AND review_state = 'draft'")
+    int markRejected(@Param("id") long id);
 }

@@ -41,3 +41,8 @@ sks:
   ai:
     base-url: ${SKS_AI_BASE_URL:http://sks-ai:8000}
   service-token: ${SERVICE_TOKEN:}
+  # 复盘双阈值带状区间（§4.4）：play >= avg×hot-threshold → hot；play < avg×flop-threshold → flop；之间 → plain。
+  # ReviewService 读后传入纯函数 ReviewStateMachine.classify（不在此读，保持纯函数可单测）。
+  review:
+    hot-threshold: ${SKS_REVIEW_HOT_THRESHOLD:3.0}
+    flop-threshold: ${SKS_REVIEW_FLOP_THRESHOLD:0.5}
