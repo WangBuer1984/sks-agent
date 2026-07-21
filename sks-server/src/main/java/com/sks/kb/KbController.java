@@ -44,7 +44,7 @@ public class KbController {
     @PutMapping("/{id}")
     public ApiResponse<Void> update(
             @AuthenticationPrincipal Long userId, @PathVariable long id, @RequestBody UpdateCardRequest req) {
-        kbCardService.update(id, req.title(), req.content());
+        kbCardService.update(userId, id, req.title(), req.content());
         return ApiResponse.ok(null);
     }
 
@@ -57,7 +57,7 @@ public class KbController {
             @AuthenticationPrincipal Long userId,
             @PathVariable long id,
             @RequestParam(defaultValue = "false") boolean force) {
-        kbCardService.delete(id, force);
+        kbCardService.delete(userId, id, force);
         return ApiResponse.ok(null);
     }
 

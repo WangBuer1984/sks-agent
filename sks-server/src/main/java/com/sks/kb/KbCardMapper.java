@@ -35,11 +35,16 @@ public interface KbCardMapper extends BaseMapper<KbCard> {
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insertCard(KbCard card);
 
-    /** 取卡片（含旧 content，供编辑时归档 + 比对变化）。不带 embedding——编辑路径会重算，无需回读。 */
+    /**
+     * 取卡片（含旧 content，供编辑时归档 + 比对变化）。不带 embedding——编辑路径会重算，无需回读。
+     *
+     * <p><b>带 user_id 过滤</b>（IDOR 防护，设计 §5.1）：跨用户访问返回 null，
+     * 由 {@link KbCardService#update} 翻译为 {@code PARAM_INVALID}——不泄露「存在但不属于你」。
+     */
     @Select(
             "SELECT id, user_id, layer, card_type, title, content, deleted, created_at, updated_at "
-                    + "FROM kb_card WHERE id = #{id} AND deleted = false")
-    KbCard findById(@Param("id") long id);
+                    + "FROM kb_card WHERE id = #{id} AND user_id = #{userId} AND deleted = false")
+    KbCard findById(@Param("id") long id, @Param("userId") long userId);
 
     /**
      * 更新 B 层卡片：写 title / content / embedding（已重算）+ updated_at。{@code deleted=false} 守卫
@@ -64,9 +69,16 @@ public interface KbCardMapper extends BaseMapper<KbCard> {
             @Param("title") String title,
             @Param("content") String content);
 
-    /** 软删：手动 SET deleted=true（不用 @TableLogic，绕开 int/boolean 不匹配）。 */
-    @Update("UPDATE kb_card SET deleted = true, updated_at = now() WHERE id = #{id} AND deleted = false")
-    int softDelete(@Param("id") long id);
+    /**
+     * 软删：手动 SET deleted=true（不用 @TableLogic，绕开 int/boolean 不匹配）。
+     *
+     * <p><b>带 user_id 过滤</b>（IDOR 防护）：跨用户删除影响 0 行，由 {@link KbCardService#delete}
+     * 在前置 {@link #findById} 所有权校验后调用；返回 rows-affected 供二次断言。
+     */
+    @Update(
+            "UPDATE kb_card SET deleted = true, updated_at = now() "
+                    + "WHERE id = #{id} AND user_id = #{userId} AND deleted = false")
+    int softDelete(@Param("id") long id, @Param("userId") long userId);
 
     /** 当前用户的未删卡片数（UGC 安全拦截后断言「什么都没落库」用）。 */
     @Select("SELECT COUNT(*) FROM kb_card WHERE user_id = #{uid} AND deleted = false")

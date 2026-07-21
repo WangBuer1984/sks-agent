@@ -79,25 +79,26 @@ public class KbCardService {
     /**
      * 编辑卡片（改 title + content）。
      *
-     * <p>B 层：先归档旧 content 到 card_history，再 safetyCheck 新值，再 embed 重算向量，最后
-     * updateWithEmbedding。A/C 层：safetyCheck 后 updateNoEmbedding（不归档、不算向量）。
+     * <p>顺序（safety-check-then-archive）：先 {@link AiClient#safetyCheck} 新值，通过后才归档旧 content
+     * 到 card_history + 重算 embedding + 落库。这样安全拦截时事务回滚，<b>不会</b>留下指向被拒新值的
+     * 脏历史，旧值也保持不变。B 层：归档 + embed + updateWithEmbedding；A/C 层：updateNoEmbedding
+     * （不归档、不算向量）。
      *
-     * <p>先归档再过审是有意为之——即使新值被安全拦截，旧值的变更历史也已留痕（审计视角）。
-     * 归档的是<b>旧</b> content，不是被拒的新值。
+     * <p><b>IDOR 防护</b>（设计 §5.1）：{@code userId} 必须与卡片 {@code user_id} 匹配，
+     * 否则 {@link KbCardMapper#findById} 返回 null → 抛 {@link ErrorCode#PARAM_INVALID}，
+     * 不泄露「存在但不属于你」。
      */
     @Transactional
-    public void update(long id, String title, String content) {
-        KbCard old = kbCardMapper.findById(id);
+    public void update(long userId, long id, String title, String content) {
+        KbCard old = kbCardMapper.findById(id, userId);
         if (old == null) {
             throw new BizException(ErrorCode.PARAM_INVALID, "卡片不存在或已删除");
-        }
-        if ("B".equals(old.getLayer())) {
-            cardHistoryMapper.insertHistory(id, old.getContent());
         }
         if (!aiClient.safetyCheck(title + " " + content)) {
             throw new BizException(ErrorCode.CONTENT_BLOCKED);
         }
         if ("B".equals(old.getLayer())) {
+            cardHistoryMapper.insertHistory(id, old.getContent());
             float[] emb = aiClient.embed(title + " " + content);
             kbCardMapper.updateWithEmbedding(id, title, content, emb);
         } else {
@@ -110,15 +111,27 @@ public class KbCardService {
      *
      * <p>查引用数：{@code >0 且 !force} 抛 CARD_IN_USE（消息带计数）；否则（force 或无引用）软删
      * {@code SET deleted=true}。
+     *
+     * <p><b>IDOR 防护</b>（设计 §5.1）：{@code userId} 必须与卡片 {@code user_id} 匹配，
+     * {@link KbCardMapper#softDelete} 的 WHERE 带 user_id，跨用户删除影响 0 行 → 抛
+     * {@link ErrorCode#PARAM_INVALID}。
      */
     @Transactional
-    public void delete(long id, boolean force) {
+    public void delete(long userId, long id, boolean force) {
+        KbCard card = kbCardMapper.findById(id, userId);
+        if (card == null) {
+            throw new BizException(ErrorCode.PARAM_INVALID, "卡片不存在或已删除");
+        }
         int citations = cardCitationMapper.countByCard(id);
         if (citations > 0 && !force) {
             throw new BizException(
                     ErrorCode.CARD_IN_USE, "有 " + citations + " 篇稿件引用此卡，删除将影响它们，请确认是否强制删除");
         }
-        kbCardMapper.softDelete(id);
+        int rows = kbCardMapper.softDelete(id, userId);
+        if (rows == 0) {
+            // 二次防御：findById 通过后 softDelete 仍 0 行（并发删除等）→ 当作不存在
+            throw new BizException(ErrorCode.PARAM_INVALID, "卡片不存在或已删除");
+        }
     }
 
     /** 列出当前用户的未删卡片（可选 layer 过滤 A/B/C），不含 embedding。 */

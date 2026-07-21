@@ -67,7 +67,7 @@ class KbCardServiceTest extends AbstractDbTest {
     @Test
     void editingBLayerCardRecomputesEmbeddingAndArchivesOld() {
         long id = kbCardService.create(uid, "B", "产品", "老价格", contentV1);
-        kbCardService.update(id, "新价格", contentV2);
+        kbCardService.update(uid, id, "新价格", contentV2);
         assertEquals(1, cardHistoryMapper.countByCard(id)); // 旧值归档
         verify(aiClient, times(2)).embed(any()); // 建+改各算一次
     }
@@ -76,8 +76,8 @@ class KbCardServiceTest extends AbstractDbTest {
     void deleteWithCitationsRequiresForce() {
         long id = kbCardService.create(uid, "B", "产品", "t", contentV1);
         cardCitationMapper.insert(new CardCitation(999L, id));
-        assertThrows(BizException.class, () -> kbCardService.delete(id, false));
-        kbCardService.delete(id, true); // force 通过
+        assertThrows(BizException.class, () -> kbCardService.delete(uid, id, false));
+        kbCardService.delete(uid, id, true); // force 通过
     }
 
     // ---- 边界用例 ----
@@ -104,7 +104,7 @@ class KbCardServiceTest extends AbstractDbTest {
     void cLayerUpdateDoesNotEmbedOrArchive() {
         long id = kbCardService.create(uid, "C", "金句", "标题", "{}");
         org.mockito.Mockito.clearInvocations(aiClient);
-        kbCardService.update(id, "新标题", "{\"text\":\"改\"}");
+        kbCardService.update(uid, id, "新标题", "{\"text\":\"改\"}");
         verify(aiClient, never()).embed(any());
         assertEquals(0, cardHistoryMapper.countByCard(id)); // C 层不归档
     }
@@ -114,7 +114,58 @@ class KbCardServiceTest extends AbstractDbTest {
     void forceDeleteWithCitationsSucceeds() {
         long id = kbCardService.create(uid, "C", "金句", "标题", "{}");
         cardCitationMapper.insert(new CardCitation(888L, id));
-        kbCardService.delete(id, true); // 不抛
+        kbCardService.delete(uid, id, true); // 不抛
         assertEquals(0, kbCardMapper.countByUser(uid)); // 已软删，count 不含
+    }
+
+    // ---- IDOR 防护（设计 §5.1）----
+
+    /**
+     * 注册第二个用户（不同手机号，避开 app_user.phone 唯一约束）。
+     *
+     * <p>每个测试方法 @Transactional 回滚，所以不同测试用相同手机号也不会冲突；
+     * 但本类 @BeforeEach 固定插 13800000012，第二用户必须在测试方法内插、用不同号。
+     */
+    private long secondUser() {
+        AppUser u = new AppUser();
+        u.setPhone("13800000099");
+        u.setDefaultPlatform("douyin");
+        appUserMapper.insert(u);
+        return u.getId();
+    }
+
+    /** 跨用户 update 应被拒：B 用户改 A 用户的卡片 → 抛 PARAM_INVALID，A 卡片内容不变。 */
+    @Test
+    void crossUserUpdateIsRejected() {
+        long uidA = uid;
+        long uidB = secondUser();
+        long idA = kbCardService.create(uidA, "B", "产品", "A 的标题", contentV1);
+        // B 冒用 A 的卡片 id 更新
+        BizException ex =
+                assertThrows(
+                        BizException.class,
+                        () -> kbCardService.update(uidB, idA, "B 篡改", contentV2));
+        assertEquals(com.sks.common.ErrorCode.PARAM_INVALID, ex.errorCode());
+        // A 的卡片未被改：标题不变、内容仍是 V1（99元，非 V2 的 199元）、未归档历史
+        KbCard after = kbCardMapper.findById(idA, uidA);
+        assertEquals("A 的标题", after.getTitle());
+        org.assertj.core.api.Assertions.assertThat(after.getContent()).contains("99");
+        org.assertj.core.api.Assertions.assertThat(after.getContent()).doesNotContain("199");
+        assertEquals(0, cardHistoryMapper.countByCard(idA));
+    }
+
+    /** 跨用户 delete 应被拒：B 用户删 A 用户的卡片 → 抛 PARAM_INVALID，A 卡片未软删。 */
+    @Test
+    void crossUserDeleteIsRejected() {
+        long uidA = uid;
+        long uidB = secondUser();
+        long idA = kbCardService.create(uidA, "C", "金句", "A 的标题", "{}");
+        BizException ex =
+                assertThrows(BizException.class, () -> kbCardService.delete(uidB, idA, true));
+        assertEquals(com.sks.common.ErrorCode.PARAM_INVALID, ex.errorCode());
+        // A 的卡片仍在
+        assertEquals(1, kbCardMapper.countByUser(uidA));
+        KbCard after = kbCardMapper.findById(idA, uidA);
+        assertEquals("A 的标题", after.getTitle());
     }
 }

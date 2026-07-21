@@ -125,6 +125,12 @@ public class AiClient {
                     e.getStatusCode(),
                     e.getResponseBodyAsString());
             throw new BizException(ErrorCode.AI_FAILED);
+        } catch (ResourceAccessException e) {
+            // 第二次（重试后）仍连接不可达 / 超时：postWithRetry 的首次 ResourceAccessException
+            // 已被吞掉重试，但二次抛出会逃出 try ——此处兜住，翻译为 AI_FAILED（与 5xx 同档），
+            // 避免裸 ResourceAccessException 冒成通用 500。
+            log.warn("AI service unreachable/timeout (after retry): path={}, msg={}", path, e.getMessage());
+            throw new BizException(ErrorCode.AI_FAILED, "AI 服务不可达/超时");
         } finally {
             MDC.remove("reqId");
         }
