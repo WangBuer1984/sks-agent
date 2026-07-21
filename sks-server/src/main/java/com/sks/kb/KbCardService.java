@@ -201,11 +201,8 @@ public class KbCardService {
      *   <li>无冲突 → <b>新建</b>（复用 {@link #create}，B 层同步 embed）。
      * </ul>
      *
-     * <p>覆盖路径直接调 {@link KbCardMapper} 的 {@code updateWithEmbedding}/{@code updateNoEmbedding}
-     * 而非 {@link #update}：因为 {@link #update} 会再 safetyCheck 一次（已在 supplement 时由
-     * Python 侧对 raw_text 过审 + cards 是 LLM 从已审 raw_text 抽出的结构化卡），且归档+更新需
-     * 原子——这里复用 {@link #update} 的 safety-then-archive-then-update 顺序最稳妥（含 safetyCheck）。
-     * 实际走 {@link #update}：safetyCheck 新值 → 归档旧值 → 重算 embed → 更新。
+     * <p>覆盖路径走 {@link #update}：safetyCheck 新值（confirm 回传的 cards 无服务端来源证明，
+     * 故新值必须复审）→ 归档旧值到 {@code card_history}（PRD §11.4）→ 重算 B 层 embed → 更新。
      */
     @Transactional
     public ConfirmResult confirmSupplement(
