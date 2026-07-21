@@ -8,6 +8,13 @@ spring:
     password: ${SPRING_DATASOURCE_PASSWORD:change_me}
     driver-class-name: org.postgresql.Driver
 
+  # 语音回答 multipart（Task 2.2）：与 Python /ai/asr 的 60s / 60MB 上限对齐，
+  # 避免 Java 先于 Python 返回 413（压缩 webm 通常远小于此，wav 60s 也覆盖）。
+  servlet:
+    multipart:
+      max-file-size: 60MB
+      max-request-size: 64MB
+
   flyway:
     enabled: true
     locations: classpath:db/migration

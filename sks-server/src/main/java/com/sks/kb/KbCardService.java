@@ -143,6 +143,15 @@ public class KbCardService {
     }
 
     /**
+     * 当前用户某层的未删卡片数（Task 2.2 定位校准 confirm 后断言「A 层卡数 = summarize 产出的 a_cards 数」用）。
+     *
+     * <p>委托 {@link KbCardMapper#countByLayer}——kb_card 表所有权在 kb 模块，跨模块访问通过 service。
+     */
+    public int countByLayer(long userId, String layer) {
+        return kbCardMapper.countByLayer(userId, layer);
+    }
+
+    /**
      * 在当前用户 B 层卡片上做 pgvector 余弦匹配（热点打分用，Task 1.7）——委托
      * {@link KbCardMapper#findBestBMatches}，阈值 {@code 0.25}（= 相似度 {@code >= 0.75}，与
      * {@code rag/retrieve.py} 默认一致），取 top-1 最佳命中。无命中返回 {@link java.util.Optional#empty}。

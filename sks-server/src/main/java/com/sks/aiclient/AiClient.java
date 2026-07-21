@@ -13,9 +13,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -240,6 +243,139 @@ public class AiClient {
         return post("/ai/card_gen", new CardGenRequest(userId, rawText, targetLayer), CardGenResult.class);
     }
 
+    // ---- interview + asr（Task 2.2 定位校准编排）----
+
+    /**
+     * Python {@code POST /ai/interview/step} 请求体（见 sks-ai/app/api/interview.py InterviewStepRequest）。
+     *
+     * <p>首轮带 {@code materials}（用户粘贴的素材文本）+ {@code user_reply=null}；后续轮带 {@code user_reply}
+     * + {@code materials=null}。字段名用 {@code @JsonProperty} 对齐 Python 的 snake_case。
+     */
+    public record InterviewStepRequest(
+            @JsonProperty("user_id") long userId,
+            @JsonProperty("session_id") String sessionId,
+            @JsonProperty("user_reply") String userReply,
+            String materials) {}
+
+    /**
+     * Python {@code POST /ai/interview/step} 响应（见 InterviewStepResponse）。
+     *
+     * <p>{@code profile_draft} 为 JSON 对象（summarize 完成时返回最终档案），Java 侧用 {@link JsonNode}
+     * 承载——与 {@link ScriptGenResult} 的 hook/body/cta 同模式。{@code blocked=true} 时仅此字段有意义
+     * （UGC 或 LLM 产出命中安全，状态机不推进）——<b>不在此抛</b>，交由 {@link
+     * com.sks.profile.ProfileService#step} 翻译为 {@link ErrorCode#CONTENT_BLOCKED}。
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record InterviewStepResponse(
+            String stage,
+            String question,
+            @JsonProperty("profile_draft") JsonNode profileDraft,
+            boolean done,
+            boolean blocked) {}
+
+    /**
+     * Python {@code GET /ai/interview/result} 响应（见 InterviewResultResponse）。
+     *
+     * <p>只读：从 checkpoint 取 summarize 产出，不推进状态机。{@code profile} 为最终档案（JSON 对象，
+     * {@code JsonNode} 承载）；{@code a_cards} 为 A 层卡草稿列表，形状与 {@link CardGenCard} 一致
+     * （{@code {card_type, title, content}}，{@code content} 为 JSON 对象）——故复用同一 record。
+     * {@code found=false} 表示无 checkpoint（访谈未完成）——由 {@link
+     * com.sks.profile.ProfileService#confirm} 翻译为 PARAM_INVALID。
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record InterviewResultResponse(
+            JsonNode profile,
+            @JsonProperty("a_cards") List<CardGenCard> aCards,
+            boolean found) {}
+
+    /**
+     * 调 Python {@code POST /ai/interview/step}，推进访谈状态机一轮。
+     *
+     * <p>校准是免费的（PRD §4.2），无额度逻辑——{@link com.sks.profile.ProfileService} 不扣不退。
+     * 非 2xx（含 token 不匹配的 403 / 422 / 5xx / 超时）由基座 {@link #post} 翻译为
+     * {@link ErrorCode#AI_FAILED}。<b>不</b>在此处理 {@code blocked}——交由调用方翻译。
+     */
+    public InterviewStepResponse interviewStep(
+            long userId, String sessionId, String userReply, String materials) {
+        return post(
+                "/ai/interview/step",
+                new InterviewStepRequest(userId, sessionId, userReply, materials),
+                InterviewStepResponse.class);
+    }
+
+    /**
+     * 调 Python {@code GET /ai/interview/result?thread_id=}，只读取 summarize 产出。
+     *
+     * <p>{@code threadId} 由 Java 构造为 {@code "userId:sessionId"}（与 Python
+     * {@code thread_id=f"{user_id}:{session_id}"} 对齐，见 interview.graph.interview_step）。
+     * GET 请求复用与 {@link #post} 相同的 {@code X-Service-Token} + {@code X-Request-Id} 头 +
+     * MDC + 重试 + 错误码翻译（见 {@link #get}）。
+     */
+    public InterviewResultResponse interviewResult(String threadId) {
+        return get("/ai/interview/result?thread_id={tid}", InterviewResultResponse.class, threadId);
+    }
+
+    /** Python {@code POST /ai/asr} 响应体 {@code {"text":"..."}}（见 sks-ai/app/api/asr.py ASRResponse）。 */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record AsrResponse(String text) {}
+
+    /**
+     * 调 Python {@code POST /ai/asr}（multipart 音频），返回转写文本。
+     *
+     * <p>音频由 {@link com.sks.profile.ProfileController} 的 {@code /api/profile/voice} 转发——用户不直接
+     * 调 Python。返回的文本由前端回显给用户确认 / 编辑后再作为该轮 {@code reply} 走 {@link #interviewStep}。
+     * ASR 失败（Python 502/503）或非 2xx / 超时 → {@link BizException}(AI_FAILED)，由调用方提示改用文字输入，
+     * <b>不阻断访谈</b>。multipart 用 {@link ByteArrayResource}（覆盖 {@code getFilename} 让
+     * {@code FormHttpMessageConverter} 带 filename）。
+     */
+    public String asr(byte[] audioBytes) {
+        String reqId = UUID.randomUUID().toString();
+        MDC.put("reqId", reqId);
+        try {
+            try {
+                return executeAsr(audioBytes, reqId);
+            } catch (ResourceAccessException e) {
+                log.warn("AI connection error (retrying): {}", e.getMessage());
+                return executeAsr(audioBytes, reqId);
+            }
+        } catch (RestClientResponseException e) {
+            log.warn(
+                    "AI service error: path=/ai/asr, status={}, body={}",
+                    e.getStatusCode(),
+                    e.getResponseBodyAsString());
+            throw new BizException(ErrorCode.AI_FAILED);
+        } catch (ResourceAccessException e) {
+            // 第二次（重试后）仍不可达 / 超时 → 翻译为 AI_FAILED（与 post 同档）。
+            log.warn("AI service unreachable/timeout (after retry): path=/ai/asr, msg={}", e.getMessage());
+            throw new BizException(ErrorCode.AI_FAILED, "AI 服务不可达/超时");
+        } finally {
+            MDC.remove("reqId");
+        }
+    }
+
+    private String executeAsr(byte[] audioBytes, String reqId) {
+        MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
+        // 覆盖 getFilename 让 multipart 带文件名（FormHttpMessageConverter 需要）。
+        parts.add(
+                "audio",
+                new ByteArrayResource(audioBytes) {
+                    @Override
+                    public String getFilename() {
+                        return "audio.wav";
+                    }
+                });
+        return restClient
+                .post()
+                .uri("/ai/asr")
+                .header("X-Service-Token", serviceToken)
+                .header("X-Request-Id", reqId)
+                .contentType(MediaType.MULTIPART_FORM_DATA)
+                .body(parts)
+                .retrieve()
+                .body(AsrResponse.class)
+                .text();
+    }
+
     // ---- hotBoard（Task 1.7 热点榜；P1 桩实现，真实接线 P3 Task 3.3 Step 3.5）----
 
     /**
@@ -315,6 +451,48 @@ public class AiClient {
                 .header("X-Request-Id", reqId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(body)
+                .retrieve()
+                .body(respType);
+    }
+
+    /**
+     * 通用 GET：镜像 {@link #post} 的头 + MDC + 重试 + 错误码翻译，但不带 body（GET 无 body）。
+     *
+     * <p>{@code path} 含 URI 变量（如 {@code ?thread_id={tid}}），{@code uriVars} 按 {@link
+     * RestClient.RequestHeadersUriSpec#uri(String, Object...)} 顺序填入并自动 URL-encode。
+     * 供 {@link #interviewResult} 等 GET typed 方法复用。
+     */
+    private <T> T get(String path, Class<T> respType, Object... uriVars) {
+        String reqId = UUID.randomUUID().toString();
+        MDC.put("reqId", reqId);
+        try {
+            try {
+                return executeGet(path, respType, reqId, uriVars);
+            } catch (ResourceAccessException e) {
+                log.warn("AI connection error (retrying): {}", e.getMessage());
+                return executeGet(path, respType, reqId, uriVars);
+            }
+        } catch (RestClientResponseException e) {
+            log.warn(
+                    "AI service error: path={}, status={}, body={}",
+                    path,
+                    e.getStatusCode(),
+                    e.getResponseBodyAsString());
+            throw new BizException(ErrorCode.AI_FAILED);
+        } catch (ResourceAccessException e) {
+            log.warn("AI service unreachable/timeout (after retry): path={}, msg={}", path, e.getMessage());
+            throw new BizException(ErrorCode.AI_FAILED, "AI 服务不可达/超时");
+        } finally {
+            MDC.remove("reqId");
+        }
+    }
+
+    private <T> T executeGet(String path, Class<T> respType, String reqId, Object... uriVars) {
+        return restClient
+                .get()
+                .uri(path, uriVars)
+                .header("X-Service-Token", serviceToken)
+                .header("X-Request-Id", reqId)
                 .retrieve()
                 .body(respType);
     }

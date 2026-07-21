@@ -85,6 +85,14 @@ public interface KbCardMapper extends BaseMapper<KbCard> {
     int countByUser(@Param("uid") long userId);
 
     /**
+     * 当前用户某层的未删卡片数（Task 2.2 定位校准 confirm 后断言「A 层卡数 = summarize 产出的 a_cards 数」用）。
+     *
+     * <p>{@code layer} 为 {@code 'A'/'B'/'C'}（CHAR(1)），与 {@link #listByUser} 的 layer 过滤同语义。
+     */
+    @Select("SELECT COUNT(*) FROM kb_card WHERE user_id = #{uid} AND layer = #{layer} AND deleted = false")
+    int countByLayer(@Param("uid") long userId, @Param("layer") String layer);
+
+    /**
      * 列出当前用户的未删卡片（可选 layer 过滤）。<b>不返回 embedding</b>（1024 float 太大，前端不需要）。
      * 用 {@link CardSummary} 轻量投影——列名下划线由 map-underscore-to-camel-case 自动映射到 record 组件。
      */

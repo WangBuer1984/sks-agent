@@ -10,6 +10,7 @@ import com.sks.common.ErrorCode;
 import com.sks.credit.CreditService;
 import com.sks.kb.CardCitation;
 import com.sks.kb.CardCitationMapper;
+import com.sks.profile.ProfileService;
 import com.sks.topic.Topic;
 import com.sks.topic.TopicService;
 import com.sks.user.AppUser;
@@ -75,6 +76,7 @@ public class ScriptService {
     private final TopicService topicService;
     private final AppUserMapper appUserMapper;
     private final DedupChecker dedupChecker;
+    private final ProfileService profileService;
     private final TransactionTemplate transactionTemplate;
 
     public ScriptService(
@@ -85,6 +87,7 @@ public class ScriptService {
             TopicService topicService,
             AppUserMapper appUserMapper,
             DedupChecker dedupChecker,
+            ProfileService profileService,
             PlatformTransactionManager transactionManager) {
         this.scriptMapper = scriptMapper;
         this.cardCitationMapper = cardCitationMapper;
@@ -93,6 +96,7 @@ public class ScriptService {
         this.topicService = topicService;
         this.appUserMapper = appUserMapper;
         this.dedupChecker = dedupChecker;
+        this.profileService = profileService;
         // 用于把回填 UPDATE + 引用 INSERT 包成一个短事务（Finding #2）——scriptGen HTTP 调用仍在事务外。
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
@@ -158,12 +162,14 @@ public class ScriptService {
             }
         }
 
-        // 6. 事务外调 Python（30-60s）。成功回填+引用；失败置 failed +（首生成）退款 + 抛
+        // 6. 事务外调 Python（30-60s）。成功回填+引用；失败置 failed +（首生成）退款 + 抛。
+        //    profile 注入 active 定位档案（P2 替换 P1 空桩）：无档案 → 空 Map，script_gen 印「（无定位档案）」。
+        Map<String, Object> profile = profileService.activeProfile(userId).orElse(Map.of());
         AiClient.ScriptGenRequest req =
                 new AiClient.ScriptGenRequest(
                         userId,
                         new AiClient.TopicRequest(topic.getTitle(), topic.getRationale() == null ? "" : topic.getRationale()),
-                        Map.of(), // profile 桩（ProfileService P2）
+                        profile,
                         plat);
         AiClient.ScriptGenResult result;
         try {
