@@ -184,6 +184,62 @@ public class AiClient {
         return resp.text();
     }
 
+    // ---- card_gen（Task 1.5 补卡）----
+
+    /**
+     * Python {@code POST /ai/card_gen} 请求体（见 sks-ai/app/api/card_gen.py CardGenRequest）。
+     *
+     * <p>字段名用 {@code @JsonProperty} 对齐 Python 的 snake_case（{@code user_id} / {@code raw_text}
+     * / {@code target_layer}）。
+     */
+    public record CardGenRequest(
+            @JsonProperty("user_id") long userId,
+            @JsonProperty("raw_text") String rawText,
+            @JsonProperty("target_layer") String targetLayer) {}
+
+    /** Python {@code CardGenCard {card_type, title, content}}——content 为 JSON 对象（JsonNode 承载）。 */
+    public record CardGenCard(
+            @JsonProperty("card_type") String cardType,
+            String title,
+            JsonNode content) {}
+
+    /**
+     * Python {@code CardGenConflict {card_id, card_index, reason}}。
+     *
+     * <p>{@code card_index} 指向 {@link #cardGen} 返回的 {@code cards} 数组下标，让 Java confirm 流程
+     * 能把「新卡」映射到要覆盖的「现有卡 card_id」。
+     */
+    public record CardGenConflict(
+            @JsonProperty("card_id") long cardId,
+            @JsonProperty("card_index") int cardIndex,
+            String reason) {}
+
+    /**
+     * Python {@code POST /ai/card_gen} 响应（见 CardGenResponse）。
+     *
+     * <p>成功时 {@code {cards, gaps, conflicts}}（blocked 缺省 → Jackson 填 false）；命中安全时
+     * {@code {blocked:true}}（cards/gaps/conflicts 缺省 → null）。与 {@link ScriptGenResult} 同模式：
+     * <b>不</b>在此处理 {@code blocked}——交由 {@link com.sks.kb.KbCardService#supplement} 翻译为
+     * {@link ErrorCode#CONTENT_BLOCKED}（补卡免费，无退款编排，直接抛即可）。
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record CardGenResult(
+            boolean blocked,
+            List<CardGenCard> cards,
+            List<String> gaps,
+            List<CardGenConflict> conflicts) {}
+
+    /**
+     * 调 Python {@code POST /ai/card_gen}，返回抽卡 + 缺口 + 冲突结果（含 {@code blocked} 标志）。
+     *
+     * <p>非 2xx（含 token 不匹配的 403 / 422 / 5xx / 超时）由基座 {@link #post} 翻译为
+     * {@link ErrorCode#AI_FAILED}。<b>不</b>在此处理 {@code blocked}——交由调用方
+     * {@link com.sks.kb.KbCardService#supplement} 抛 {@link ErrorCode#CONTENT_BLOCKED}。
+     */
+    public CardGenResult cardGen(long userId, String rawText, String targetLayer) {
+        return post("/ai/card_gen", new CardGenRequest(userId, rawText, targetLayer), CardGenResult.class);
+    }
+
     // ---- 基座：headers + timeout + retry + error translation + MDC ----
 
     /**

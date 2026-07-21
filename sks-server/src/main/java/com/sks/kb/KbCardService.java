@@ -3,7 +3,10 @@ package com.sks.kb;
 import com.sks.aiclient.AiClient;
 import com.sks.common.BizException;
 import com.sks.common.ErrorCode;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -138,4 +141,122 @@ public class KbCardService {
     public List<CardSummary> list(long userId, String layer) {
         return kbCardMapper.listByUser(userId, layer);
     }
+
+    // ---- 补卡 supplement / confirm（Task 1.5）--------------------------------
+
+    /**
+     * 补卡第一步：调 card_gen 抽卡 + 缺口 + 冲突检测。
+     *
+     * <p>两步流程的第一步（设计文档 §7 + §11.4）：
+     * <ol>
+     *   <li>调 {@link AiClient#cardGen}：raw_text 先在 Python 侧过 UGC 安全（§5.1），命中
+     *       {@code blocked=true} → 抛 {@link ErrorCode#CONTENT_BLOCKED}（补卡免费，无退款编排，直接抛）。
+     *   <li><b>无冲突</b> → 直接建卡（B 层同步算 embedding，复用 {@link #create}）。{@code createdIds}
+     *       非空，{@code conflicts} 为空。
+     *   <li><b>有冲突</b> → 不建任何卡，返回 {@code cards/gaps/conflicts} 供前端展示冲突 + 二次确认。
+     *       {@code createdIds=null}，{@link SupplementResult#needsConfirm()} 返回 true。
+     * </ol>
+     *
+     * <p><b>免费</b>：brief 不列扣额度/退款——补卡是 FREE（与 rewrite_sentence 同档），不走 credit 链。
+     *
+     * <p>建卡复用 {@link #create}：每张卡 title+content 再过一次 safetyCheck（belt-and-suspenders，
+     * raw_text 已过审但 LLM 抽出的卡内容仍按 UGC 标准复检）+ B 层 embed。IDOR 由 {@link #create}
+     * 的 userId 隔离保证。
+     */
+    @Transactional
+    public SupplementResult supplement(long userId, String rawText, String layer) {
+        AiClient.CardGenResult result = aiClient.cardGen(userId, rawText, layer);
+        if (result.blocked()) {
+            throw new BizException(ErrorCode.CONTENT_BLOCKED);
+        }
+        List<AiClient.CardGenConflict> conflicts =
+                result.conflicts() == null ? List.of() : result.conflicts();
+        List<String> gaps = result.gaps() == null ? List.of() : result.gaps();
+        List<AiClient.CardGenCard> cards = result.cards() == null ? List.of() : result.cards();
+        if (!conflicts.isEmpty()) {
+            // 有冲突 → 返回供确认，不建任何卡
+            return new SupplementResult(null, cards, gaps, conflicts);
+        }
+        // 无冲突 → 直接建卡（B 层同步 embed）
+        List<Long> createdIds = new ArrayList<>();
+        for (AiClient.CardGenCard c : cards) {
+            createdIds.add(create(userId, layer, c.cardType(), c.title(), c.content().toString()));
+        }
+        return new SupplementResult(createdIds, cards, gaps, conflicts);
+    }
+
+    /**
+     * 补卡第二步：用户确认后落卡（覆盖选中的冲突卡 + 建非冲突卡）。
+     *
+     * <p><b>无状态、不重新抽卡</b>：cards + conflicts 由前端原样回传（来自 supplement 响应），
+     * 避免 re-extract 的 LLM 非确定性导致用户确认的卡 ≠ 实际落库的卡。Java 不再调 cardGen。
+     *
+     * <p>对每张新卡（按 index）：
+     * <ul>
+     *   <li>conflicts 中有 {@code card_index == i} 且其 {@code card_id ∈ overwriteCardIds} →
+     *       <b>覆盖</b>该旧卡：先归档旧 content 到 {@code card_history}（§11.4）+ 更新
+     *       （B 层重算 embedding，复用 {@link #update} 的归档+重算路径）。IDOR 由
+     *       {@link KbCardMapper#findById} 的 user_id 过滤保证。
+     *   <li>conflicts 中有但 {@code card_id ∉ overwriteCardIds} → <b>跳过</b>（用户选择不覆盖也不新建）。
+     *   <li>无冲突 → <b>新建</b>（复用 {@link #create}，B 层同步 embed）。
+     * </ul>
+     *
+     * <p>覆盖路径直接调 {@link KbCardMapper} 的 {@code updateWithEmbedding}/{@code updateNoEmbedding}
+     * 而非 {@link #update}：因为 {@link #update} 会再 safetyCheck 一次（已在 supplement 时由
+     * Python 侧对 raw_text 过审 + cards 是 LLM 从已审 raw_text 抽出的结构化卡），且归档+更新需
+     * 原子——这里复用 {@link #update} 的 safety-then-archive-then-update 顺序最稳妥（含 safetyCheck）。
+     * 实际走 {@link #update}：safetyCheck 新值 → 归档旧值 → 重算 embed → 更新。
+     */
+    @Transactional
+    public ConfirmResult confirmSupplement(
+            long userId,
+            String layer,
+            List<AiClient.CardGenCard> cards,
+            List<AiClient.CardGenConflict> conflicts,
+            List<Long> overwriteCardIds) {
+        Set<Long> overwrite = overwriteCardIds == null ? Set.of() : new HashSet<>(overwriteCardIds);
+        List<Long> createdIds = new ArrayList<>();
+        List<Long> overwrittenIds = new ArrayList<>();
+        for (int i = 0; i < cards.size(); i++) {
+            AiClient.CardGenCard c = cards.get(i);
+            AiClient.CardGenConflict conflict = findConflict(conflicts, i);
+            if (conflict != null && overwrite.contains(conflict.cardId())) {
+                // 覆盖：归档旧值 + 更新（B 层重算 embedding + safetyCheck）
+                long oldId = conflict.cardId();
+                update(userId, oldId, c.title(), c.content().toString());
+                overwrittenIds.add(oldId);
+            } else if (conflict != null) {
+                // 跳过：用户未选覆盖
+                continue;
+            } else {
+                // 无冲突 → 新建（B 层同步 embed + safetyCheck）
+                createdIds.add(create(userId, layer, c.cardType(), c.title(), c.content().toString()));
+            }
+        }
+        return new ConfirmResult(createdIds, overwrittenIds);
+    }
+
+    private static AiClient.CardGenConflict findConflict(
+            List<AiClient.CardGenConflict> conflicts, int cardIndex) {
+        if (conflicts == null) return null;
+        for (AiClient.CardGenConflict c : conflicts) {
+            if (c.cardIndex() == cardIndex) return c;
+        }
+        return null;
+    }
+
+    /** 补卡 supplement 结果。{@code createdIds} 非空=已建卡；为 null=需确认（有冲突）。 */
+    public record SupplementResult(
+            List<Long> createdIds,
+            List<AiClient.CardGenCard> cards,
+            List<String> gaps,
+            List<AiClient.CardGenConflict> conflicts) {
+        /** 有冲突待用户确认（true=前端应展示冲突 + 调 confirm）。 */
+        public boolean needsConfirm() {
+            return conflicts != null && !conflicts.isEmpty();
+        }
+    }
+
+    /** 补卡 confirm 结果：新建卡 id + 覆盖的旧卡 id。 */
+    public record ConfirmResult(List<Long> createdIds, List<Long> overwrittenIds) {}
 }
