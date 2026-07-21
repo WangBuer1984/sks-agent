@@ -283,6 +283,62 @@ class AnalyzeServiceTest extends AbstractDbTest {
                         uid));
     }
 
+    // ---- §4.3 C1 修复：Python 写 failed 的终态行，poller 必须退（never miss a charge）----
+
+    /**
+     * §4.3 C1：Python BackgroundTasks 在 202 返回<b>之后</b>写 {@code status='failed'}
+     * （full-scrape DataSourceError / all-items-failed / LLM-output-blocked）——sync 路径的
+     * {@code failAndRefund} 因 202 已成功而未触发，poller 是唯一退款路径。模拟账户任务
+     * （charged=10，更大的钱）post-202 failed 行，{@code reconcile()} 必须全额退 + 幂等不双退。
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void pythonWrittenFailedFullRefund() {
+        creditService.credit(uid, 10, "recharge", "o1", null);
+        when(aiClient.precheck(any())).thenReturn(new AiClient.Precheck(true, 20));
+        long taskId = analyzeService.startAccount(uid, "ok-url"); // 扣 10，202 已成功
+        assertEquals(0, creditService.balance(uid)); // 扣完余额 0
+        // 模拟 Python 在 202 后写 failed（full-scrape DataSourceError）
+        jdbcTemplate.update(
+                "UPDATE analyze_task SET status = 'failed', error = 'full scrape DataSourceError', "
+                        + "updated_at = now() WHERE id = ?",
+                taskId);
+        poller.reconcile();
+        assertEquals(10, creditService.balance(uid)); // 全额退
+        assertEquals(1, refundCount("analyze_account")); // 承重：refund 真正落库
+        assertEquals(1, failedCount("account")); // status 仍 failed
+        // 幂等：再 reconcile 不双退（count 守卫 + credit_ledger 唯一约束）
+        poller.reconcile();
+        assertEquals(10, creditService.balance(uid));
+        assertEquals(1, refundCount("analyze_account"));
+    }
+
+    /**
+     * §4.3 C1 video/link 变体：Python 转写 DataSourceError / LLM-output-blocked 写
+     * {@code status='failed'}（charged=1）。poller 必须全额退。
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void pythonWrittenFailedVideoLinkFullRefund() {
+        creditService.credit(uid, 5, "recharge", "o1", null);
+        when(aiClient.analyzeVideoLink(anyLong(), any())).thenReturn(new AiClient.AnalyzeAccepted(0));
+        long taskId = analyzeService.startVideoLink(uid, "https://v.douyin.com/xxx"); // 扣 1，202 已成功
+        assertEquals(4, creditService.balance(uid));
+        // 模拟 Python 在 202 后写 failed（转写 DataSourceError）
+        jdbcTemplate.update(
+                "UPDATE analyze_task SET status = 'failed', error = 'transcribe DataSourceError', "
+                        + "updated_at = now() WHERE id = ?",
+                taskId);
+        poller.reconcile();
+        assertEquals(5, creditService.balance(uid)); // 全额退回扣的 1
+        assertEquals(1, refundCount("analyze_video"));
+        assertEquals(1, failedCount("video"));
+        // 幂等
+        poller.reconcile();
+        assertEquals(5, creditService.balance(uid));
+        assertEquals(1, refundCount("analyze_video"));
+    }
+
     /** §4.3 account 额度公式：charge = max(1, min(10, floor(N/2)))。N=4→2, N=20→10, N=1→1。 */
     @Test
     @Transactional(propagation = Propagation.NOT_SUPPORTED)

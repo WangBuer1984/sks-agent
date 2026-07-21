@@ -87,6 +87,39 @@ public class AnalyzeTaskPoller {
         } catch (Exception e) {
             log.warn("reconcile done-account (benchmark) failed: {}", e.getMessage());
         }
+        try {
+            reconcileFailed();
+        } catch (Exception e) {
+            log.warn("reconcile failed (python-written) failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Python-written terminal {@code failed}——brief「三种轮询情况」枚举漏掉的第 4 种终态。
+     *
+     * <p>Python BackgroundTasks 在 202 返回<b>后</b>显式写 {@code status='failed'}：
+     * <ul>
+     *   <li>video/link：转写 DataSourceError / unexpected Exception / LLM-output-blocked
+     *   <li>account：full-scrape DataSourceError / all-items-failed
+     * </ul>
+     * 这些任务用户已在 202 前扣费且 202 已成功（故 {@code startAsyncTask} 的 catch 内
+     * {@code failAndRefund} 未触发），poller 是唯一退款路径。stale scans 看不到它们
+     * （status 已终态，非 running/queued），partial scan 也看不到（非 partial）。漏掉即吞额度。
+     *
+     * <p><b>幂等安全</b>：复用 {@link #fullRefund}，{@link CreditService#refund} 先查
+     * {@code credit_ledger(biz_id, biz_type, 'refund')} 计数 >0 即 return，故重复 reconcile
+     * 对已退过的 failed 行（如 sync video/text 的 {@code failAndRefund}、running-timeout /
+     * stale-queued 已退+markFailed 的行）是干净 no-op；credit_ledger UNIQUE 约束是并发兜底。
+     * 对已 failed 的行再调 {@code markFailed} 是幂等重写（status 不变、updated_at bump）。
+     */
+    private void reconcileFailed() {
+        for (AnalyzeTask t : analyzeTaskMapper.findFailed()) {
+            try {
+                fullRefund(t, "python-written failed");
+            } catch (Exception e) {
+                log.warn("failed-refund failed for task {}: {}", t.getId(), e.getMessage());
+            }
+        }
     }
 
     /** running-timeout：updated_at < now-5min → failed + 全额退。 */

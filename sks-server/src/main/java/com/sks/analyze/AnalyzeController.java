@@ -69,7 +69,9 @@ public class AnalyzeController {
             @AuthenticationPrincipal Long userId, @PathVariable long id) {
         AnalyzeTask t = analyzeService.getTask(userId, id);
         List<BenchmarkVideo> videos = List.of();
-        if ("account".equals(t.getTaskType()) && "done".equals(t.getStatus())) {
+        // partial 也展示 TOP20：Python 已为成功条目写 benchmark_video 行（brief 无 done-only 限定）。
+        if ("account".equals(t.getTaskType())
+                && ("done".equals(t.getStatus()) || "partial".equals(t.getStatus()))) {
             videos = analyzeService.listBenchmarkVideos(id);
         }
         return ApiResponse.ok(TaskDetail.of(t, videos));

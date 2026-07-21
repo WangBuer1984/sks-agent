@@ -71,6 +71,15 @@ public interface AnalyzeTaskMapper {
             "SELECT * FROM analyze_task WHERE status = 'done' AND task_type = 'account' ORDER BY id")
     List<AnalyzeTask> findDoneAccount();
 
+    /**
+     * 轮询器：Python BackgroundTasks 在 202 返回<b>后</b>显式写的 {@code status='failed'} 终态行
+     * （video/link 转写 DataSourceError / LLM-output-blocked / unexpected Exception；account
+     * full-scrape DataSourceError / all-items-failed）。含已退过的——refund 幂等挡双退。这是 brief
+     * 「三种轮询情况」枚举漏掉的<b>第 4 种终态</b>：stale scans 只覆盖非终态，Python 写 failed 已是终态。
+     */
+    @Select("SELECT * FROM analyze_task WHERE status = 'failed' ORDER BY id")
+    List<AnalyzeTask> findFailed();
+
     /** 取任务（含 result JSONB 文本）。带 user_id 过滤（IDOR 防护，§5.1）——跨用户返回 null。 */
     @Select("SELECT * FROM analyze_task WHERE id = #{id} AND user_id = #{userId}")
     AnalyzeTask findById(@Param("id") long id, @Param("userId") long userId);
