@@ -252,10 +252,25 @@ public class ScriptService {
         }
     }
 
-    /** 占位行置 failed + 退款（幂等，双退安全）——首生成失败路径用（扣过必退）。 */
+    /**
+     * 退款 + 占位行置 failed——首生成失败路径用（扣过必退）。<b>顺序：先 refund 后 markFailed。</b>
+     *
+     * <p><b>顺序的承重理由（P1 final review I1）：</b>{@code markFailed}（auto-commit）与 {@code refund}
+     * （独立短事务）是两次独立提交。若 {@code markFailed} 先跑、{@code refund} 后跑，二者之间 DB 抖动 /
+     * 连接中断会让 {@code markFailed} 已落库（failed）而 {@code refund} 永不执行 → 用户为一条 failed
+     * 稿被扣额度、且静默——违反 §4.1 #1「失败必退，永不漏扣」。
+     *
+     * <p>倒过来：<b>refund 先落</b>（钱立即正确，幂等键 {@code (biz_id, biz_type, 'refund')} 双退安全），
+     * 再 {@code markFailed}。若 {@code markFailed} 随后抛，script 停在 {@code generating}（未 failed）——
+     * 一个 {@code generating} + 已退款 的行是<b>可对账的中间态</b>（未来 stuck-generating 扫描会标出），
+     * 钱已对；而一个 {@code failed} + 未退款 的行是<b>钱丢失且静默</b>。前者严格优于后者。
+     *
+     * <p><b>不要</b>用 {@link TransactionTemplate} 包二者——refund 独立提交、在随后 markFailed 失败下存活，
+     * 正是本顺序要保证的；包进同一事务会让 refund 跟着 markFailed 一起回滚，回到「失败必退」被破坏的状态。
+     */
     private void failAndRefund(long userId, long scriptId) {
-        scriptMapper.markFailed(scriptId);
         creditService.refund(userId, 1, "generate", String.valueOf(scriptId));
+        scriptMapper.markFailed(scriptId);
     }
 
     /**

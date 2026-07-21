@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -26,6 +28,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -65,6 +68,11 @@ class ScriptServiceTest extends AbstractDbTest {
     @Autowired AppUserMapper appUserMapper;
     @Autowired JdbcTemplate jdbcTemplate;
     @MockBean AiClient aiClient;
+    // 真实 MyBatis Mapper 的 Mockito spy：默认委托真实实现（insertPlaceholder/findSuccessfulId/…
+    // 不受影响），仅本测试方法内对 markFailed 桩抛——模拟「refund 落库后 markFailed 时 DB 抖动」的中间故障。
+    // 其它测试方法不桩 markFailed → 仍走真实 markFailed，零回归。stubble 在方法内、由 MockitoReset 在
+    // 测试间清理，不会泄漏到其它用例。
+    @SpyBean ScriptMapper scriptMapper;
 
     private static final ObjectMapper OM = new ObjectMapper();
 
@@ -121,6 +129,55 @@ class ScriptServiceTest extends AbstractDbTest {
                 1,
                 jdbcTemplate.queryForObject(
                         "SELECT COUNT(*) FROM credit_ledger WHERE user_id = ? AND biz_type = 'generate' AND type = 'refund'",
+                        Integer.class,
+                        uid));
+    }
+
+    /**
+     * §4.1 #1 资金不变量「失败必退」——中间 DB 故障场景（refund 与 markFailed 之间断线）。
+     *
+     * <p>现有 {@link #generationFailureRefundsCredit} 仅覆盖「scriptGen 抛 + 全程 DB 健康」路径——
+     * markFailed 与 refund 都成功落库，不证伪「两者顺序」的回归。本测试补<b>承重</b>缺口：
+     * 让 {@code scriptMapper.markFailed} 抛（连接中断 / DB 抖动），断言<b>退款已落、钱已对、script 仍
+     * generating</b>——即「先 refund 后 markFailed」顺序保证退款<b>不</b>因后续 markFailed 失败而丢失。
+     *
+     * <p>顺序不变量：refund 必须先于 markFailed。若顺序倒回「先 markFailed 后 refund」，markFailed 抛 →
+     * refund 永不执行 → 退款流水 0 条、余额停 4 → 红。这正是该测试钉死的回归（P1 final review I1）。
+     *
+     * <p>一个 {@code generating} + 已退款 的行是可对账的中间态（未来 stuck-generating 扫描会标出），
+     * 钱已对；而一个 {@code failed} + 未退款 的行是钱丢失且静默。前者严格优于后者。
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void intermediateMarkFailedFailureStillRefundsCredit() {
+        creditService.credit(uid, 5, "recharge", "o1", null);
+        when(aiClient.scriptGen(any())).thenThrow(new RuntimeException("timeout"));
+        // 模拟 markFailed 时 DB 抖动 / 连接中断（refund 已跑、markFailed 抛）。
+        doThrow(new RuntimeException("markFailed boom")).when(scriptMapper).markFailed(anyLong());
+        // generate: 插占位 → 扣 5→4 → scriptGen 抛 → failAndRefund：先 refund（4→5）→ markFailed 抛 → 传播。
+        assertThrows(
+                RuntimeException.class,
+                () -> scriptService.generate(uid, topicId, "douyin"));
+        // 承重断言一：退款流水已落库（=1）。若顺序为「先 markFailed 后 refund」，markFailed 抛 → refund 不执行 → 0 → 红。
+        assertEquals(
+                1,
+                jdbcTemplate.queryForObject(
+                        "SELECT COUNT(*) FROM credit_ledger WHERE user_id = ? AND biz_type = 'generate' AND type = 'refund'",
+                        Integer.class,
+                        uid));
+        // 承重断言二：余额已退回 5（refund 先于 markFailed 落库、独立短事务已提交）。
+        assertEquals(5, creditService.balance(uid));
+        // 承重断言三：script 仍 generating（markFailed 抛 → 未提交 failed）——可对账的中间态，钱已对。
+        assertEquals(
+                1,
+                jdbcTemplate.queryForObject(
+                        "SELECT COUNT(*) FROM script WHERE user_id = ? AND review_state = 'generating'",
+                        Integer.class,
+                        uid));
+        assertEquals(
+                0,
+                jdbcTemplate.queryForObject(
+                        "SELECT COUNT(*) FROM script WHERE user_id = ? AND review_state = 'failed'",
                         Integer.class,
                         uid));
     }
