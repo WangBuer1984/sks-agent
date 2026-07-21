@@ -22,4 +22,22 @@ public interface TopicMapper extends BaseMapper<Topic> {
     /** 当前用户的全部选题（按创建时间倒序），供创作页选择。 */
     @Select("SELECT * FROM topic WHERE user_id = #{userId} ORDER BY created_at DESC, id DESC")
     List<Topic> listByUser(@Param("userId") long userId);
+
+    /**
+     * 四路聚合查询（Task 1.7）：按 user_id（IDOR 隔离）+ 可选 source 过滤，按 pillar 排序。
+     *
+     * <p><b>pillar 排序 MVP 选择</b>（brief cross-task 决策 #2）：{@code pillar ASC NULLS LAST} 为主序
+     * + {@code created_at DESC, id DESC} 为次序——即「按内容支柱分组（字母序），同支柱内最新优先，
+     * 空 pillar 垫底」。真正的「支柱配比加权」需按支柱配额抽样（V1.1+），P1 用「分组 + 最新」既满足
+     * 「按 pillar 聚拢」的可读性目标又不引入未定义的配比数据。PG 的 {@code NULLS LAST} 让空 pillar
+     * 排到末尾（默认 ASC NULLS FIRST 在 PG 中反而是 NULLS LAST？——PG 默认 ASC=NULLS LAST，显式写明更稳）。
+     *
+     * <p>{@code (#{source} IS NULL OR source = #{source})}：source 为 null → 不过滤（聚合四路）；
+     * source 非空 → 单路过滤。
+     */
+    @Select(
+            "SELECT * FROM topic WHERE user_id = #{userId} "
+                    + "AND (#{source}::text IS NULL OR source = #{source}) "
+                    + "ORDER BY pillar ASC NULLS LAST, created_at DESC, id DESC")
+    List<Topic> listByUserWithSource(@Param("userId") long userId, @Param("source") String source);
 }

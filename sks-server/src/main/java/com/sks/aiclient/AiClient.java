@@ -240,6 +240,33 @@ public class AiClient {
         return post("/ai/card_gen", new CardGenRequest(userId, rawText, targetLayer), CardGenResult.class);
     }
 
+    // ---- hotBoard（Task 1.7 热点榜；P1 桩实现，真实接线 P3 Task 3.3 Step 3.5）----
+
+    /**
+     * 热点榜条目（Python {@code GET /ai/hot_board} 返回数组的一项）。P1 仅 title 必填；rationale / pillar
+     * 为可选 hint，P3 TikHub 接线后由 Python 侧填充。
+     *
+     * <p><b>非 UGC</b>：热点标题来自平台热榜（TikHub），不经 safetyCheck——与用户自建 faq 选题（UGC）
+     * 区别对待（brief 明确不双重过审）。
+     */
+    public record HotItem(String title, String rationale, String pillar) {}
+
+    /**
+     * 调 Python {@code GET /ai/hot_board} 取当前平台热点榜。
+     *
+     * <p><b>P1 桩实现</b>：返回空列表 + WARN 日志。真实接线（Python 调 TikHub 热榜）在
+     * <b>P3 Task 3.3 Step 3.5</b>。桩保证 P1 可编译 + 可测（测试 mock 之）；运行期 {@link
+     * com.sks.topic.HotTopicJob} 跑了也不入库、不报错（空列表 → 打分循环 0 次）。
+     *
+     * <p>方法签名 + {@link HotItem} 形状已定为 P3 实现对齐——P3 仅替换方法体（删桩 + 真 HTTP GET），
+     * 不动调用方（{@link com.sks.topic.TopicService#scoreHotTopicsForUser} / {@link
+     * com.sks.topic.HotTopicJob}）。
+     */
+    public List<HotItem> hotBoard() {
+        log.warn("hotBoard not wired (P3 Task 3.3 Step 3.5); returning empty");
+        return List.of();
+    }
+
     // ---- 基座：headers + timeout + retry + error translation + MDC ----
 
     /**

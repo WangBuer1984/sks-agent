@@ -142,6 +142,24 @@ public class KbCardService {
         return kbCardMapper.listByUser(userId, layer);
     }
 
+    /**
+     * 在当前用户 B 层卡片上做 pgvector 余弦匹配（热点打分用，Task 1.7）——委托
+     * {@link KbCardMapper#findBestBMatches}，阈值 {@code 0.25}（= 相似度 {@code >= 0.75}，与
+     * {@code rag/retrieve.py} 默认一致），取 top-1 最佳命中。无命中返回 {@link java.util.Optional#empty}。
+     *
+     * <p>放在 KbCardService 而非 TopicService 直查 mapper，因 kb_card 表的所有权在 kb 模块——
+     * 跨模块访问通过 service，避免 topic 直接依赖 KbCardMapper（缓解耦合 + 后续改 schema 不波及调用方）。
+     */
+    public java.util.Optional<BMatch> findBestBMatch(long userId, float[] vec) {
+        List<BMatch> matches = kbCardMapper.findBestBMatches(userId, vec, 0.25, 1);
+        return matches.isEmpty() ? java.util.Optional.empty() : java.util.Optional.of(matches.get(0));
+    }
+
+    /** 有 B 层卡片的用户 id 列表（{@link com.sks.topic.HotTopicJob} 按 user 轮询热点打分用）。 */
+    public List<Long> findUserIdsWithBCards() {
+        return kbCardMapper.findUserIdsWithBCards();
+    }
+
     // ---- 补卡 supplement / confirm（Task 1.5）--------------------------------
 
     /**

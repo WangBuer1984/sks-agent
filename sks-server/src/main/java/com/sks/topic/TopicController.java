@@ -8,13 +8,15 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
  * C 端选题端点 {@code /api/topics}。
  *
  * <p>落在 user SecurityFilterChain（{@code /api/**} 需 user JWT），{@code @AuthenticationPrincipal Long userId}
- * 由 {@link com.sks.config.UserJwtFilter} 注入。三个端点：GET 列表、GET 详情、POST 新建（title 过 UGC 安全）。
+ * 由 {@link com.sks.config.UserJwtFilter} 注入。三个端点：GET 列表（四路聚合，Task 1.7）、GET 详情、
+ * POST 新建（title 过 UGC 安全）。
  */
 @RestController
 @RequestMapping("/api/topics")
@@ -26,10 +28,17 @@ public class TopicController {
         this.topicService = topicService;
     }
 
-    /** 当前用户的选题列表（按创建时间倒序）。 */
+    /**
+     * 当前用户的选题列表（四路聚合，按 pillar 排序）。
+     *
+     * <p>{@code source} 可选：传 {@code hot/faq/benchmark/replay} 之一 → 单路过滤；不传 / 空白 → 聚合四路。
+     * IDOR 防护：只返回 {@code userId} 自己的选题（{@link TopicService#list(long, String)} 的 user_id 过滤）。
+     */
     @GetMapping
-    public ApiResponse<List<Topic>> list(@AuthenticationPrincipal Long userId) {
-        return ApiResponse.ok(topicService.list(userId));
+    public ApiResponse<List<Topic>> list(
+            @AuthenticationPrincipal Long userId,
+            @RequestParam(name = "source", required = false) String source) {
+        return ApiResponse.ok(topicService.list(userId, source));
     }
 
     /** 选题详情。跨用户访问返回 PARAM_INVALID（不泄露存在性）。 */

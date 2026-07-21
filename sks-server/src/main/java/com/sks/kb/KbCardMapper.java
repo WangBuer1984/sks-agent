@@ -94,4 +94,35 @@ public interface KbCardMapper extends BaseMapper<KbCard> {
                     + "AND (#{layer} IS NULL OR layer = #{layer}) "
                     + "ORDER BY updated_at DESC, id DESC")
     List<CardSummary> listByUser(@Param("uid") long userId, @Param("layer") String layer);
+
+    /**
+     * 在当前用户的 B 层卡片上做 pgvector 余弦匹配（热点打分用，Task 1.7）——镜像 Python
+     * {@code rag/retrieve.py#retrieve_b_cards} 的 SQL：{@code user_id + layer='B' + deleted=false}
+     * + 距离阈值 + ORDER BY 距离 + LIMIT k。<b>不返回 content</b>（打分只需 id/title/distance）。
+     *
+     * <p>方向注意：{@code embedding <=> vec} 返回余弦<b>距离</b>（0=相同），{@code <= maxDistance}
+     * 相当于 {@code similarity >= 1 - maxDistance}；{@code maxDistance=0.25} = 相似度 {@code >= 0.75}。
+     * 照抄 retrieve.py 勿写反（最常见的 RAG 翻车点）。
+     *
+     * <p>{@code #{vec, typeHandler=com.sks.kb.VectorTypeHandler}::vector} 与 {@link #insertCard} 同模式：
+     * TypeHandler 把 {@code float[]} 拼成 pgvector 字面量字符串，{@code ::vector} 显式 cast。
+     * 同一参数复用 3 次（SELECT 投影 + WHERE + ORDER BY）——MyBatis 各占位符独立绑定为同值字符串。
+     */
+    @Select(
+            "SELECT id, card_type, title, "
+                    + "(embedding <=> #{vec, typeHandler=com.sks.kb.VectorTypeHandler}::vector) AS distance "
+                    + "FROM kb_card "
+                    + "WHERE user_id = #{uid} AND layer = 'B' AND deleted = false "
+                    + "AND (embedding <=> #{vec, typeHandler=com.sks.kb.VectorTypeHandler}::vector) <= #{maxDistance} "
+                    + "ORDER BY embedding <=> #{vec, typeHandler=com.sks.kb.VectorTypeHandler}::vector "
+                    + "LIMIT #{k}")
+    List<BMatch> findBestBMatches(
+            @Param("uid") long userId,
+            @Param("vec") float[] vec,
+            @Param("maxDistance") double maxDistance,
+            @Param("k") int k);
+
+    /** 有 B 层未删卡片的用户 id 去重列表（{@link com.sks.topic.HotTopicJob} 按 user 轮询热点打分用）。 */
+    @Select("SELECT DISTINCT user_id FROM kb_card WHERE layer = 'B' AND deleted = false")
+    List<Long> findUserIdsWithBCards();
 }
