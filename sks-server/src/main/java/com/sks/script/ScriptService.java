@@ -17,6 +17,8 @@ import com.sks.user.AppUserMapper;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -64,6 +66,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class ScriptService {
 
     private static final ObjectMapper OM = new ObjectMapper();
+    private static final Logger log = LoggerFactory.getLogger(ScriptService.class);
 
     private final ScriptMapper scriptMapper;
     private final CardCitationMapper cardCitationMapper;
@@ -202,7 +205,8 @@ public class ScriptService {
                             userId, scriptId, plainText, dedupChecker.getDefaultThreshold());
             dedupWarnScriptId = warn.orElse(null);
         } catch (RuntimeException e) {
-            // 查重失败不应影响已成功的生成——降级为不告警。
+            // 查重失败不应影响已成功的生成——降级为不告警，但留痕以便观测。
+            log.warn("dedup check failed for script {}, degrading to no warning", scriptId, e);
             dedupWarnScriptId = null;
         }
         return new GenerateResult(scriptId, dedupWarnScriptId);

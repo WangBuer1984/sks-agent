@@ -129,13 +129,12 @@ class DedupCheckerDbTest extends AbstractDbTest {
     // ---- helpers ----
 
     private long insertUser() {
+        String phone = "1390" + System.nanoTime();
         jdbcTemplate.update(
-                "INSERT INTO app_user(phone, default_platform) VALUES(?, 'douyin')",
-                "1390" + System.nanoTime());
+                "INSERT INTO app_user(phone, default_platform) VALUES(?, 'douyin')", phone);
         Long id =
                 jdbcTemplate.queryForObject(
-                        "SELECT id FROM app_user WHERE phone LIKE '1390%' ORDER BY id DESC LIMIT 1",
-                        Long.class);
+                        "SELECT id FROM app_user WHERE phone = ?", Long.class, phone);
         return id;
     }
 
