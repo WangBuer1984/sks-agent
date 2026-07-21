@@ -28,11 +28,10 @@ import org.springframework.transaction.annotation.Transactional;
  *       ErrorCode#SMS_CODE_LOCKED}。验证码本身 5 分钟过期，锁定窗口比它长，复用已有列无需新列。
  *   <li><b>登录即注册</b>：手机号不存在则插入 {@code app_user}，返回 {@code isNew=true}。首次注册
  *       （{@code isNew=true}）时调用 {@link RechargeOrderService#onUserRegistered} 注册钩子——三步原子
- *       （{@code @Transactional}）：① {@code ensureAccount} 建账 → ② 建 {@code status='trial'} 免费
- *       体验单 → ③ {@code credit} 送 {@code sks.trial-credit}（默认 3）条体验额度。钩子是独立事务方法
- *       （跨 bean 调用，Spring 代理生效），login 自身非 {@code @Transactional}，但 app_user 插入会先
- *       auto-commit；钩子失败仅回滚钩子三步，不破坏 app_user 落库——用户可重新发码登录重试
- *       （{@code credit} 幂等，重试不重复入账）。
+ *       （① {@code ensureAccount} 建账 → ② 建 {@code status='trial'} 免费体验单 → ③ {@code credit} 送
+ *       {@code sks.trial-credit}（默认 3）条体验额度）。{@code login} 自身是 {@code @Transactional}，
+ *       钩子 ({@code REQUIRED}) 加入 login 事务——app_user 插入与钩子三步同生共死；钩子失败则 app_user
+ *       一并回滚，重试登录 {@code isNew=true} 重新触发钩子，{@code credit} 幂等不重复入账。
  *   <li><b>SMS 发送留桩</b>：MVP 期只把验证码写入 {@code sms_code} 表 + 日志，不调真实网关（联调时替换）。
  * </ul>
  *
@@ -99,8 +98,17 @@ public class AuthService {
      * 校验验证码登录：锁定判定 → 取最近未使用未过期码比对 → 错误 err_count+1（达 5 进入锁定）→
      * 成功标 used + upsert app_user + 签发 user JWT。
      *
-     * <p>注意：upsert app_user 时只插手机号，<strong>不</strong>触发任何额度/注册钩子——Task 0.7 接线。
+     * <p>本方法 {@code @Transactional}：app_user 插入 + 注册钩子（{@link
+     * RechargeOrderService#onUserRegistered} 的 3 步：ensureAccount + createTrialOrder +
+     * credit）在同一事务内原子提交。若钩子失败（如瞬时 DB 错误），app_user 插入一并回滚——
+     * 用户重新发码登录时 {@code findByPhone} 返回 null → {@code isNew=true} → 钩子重新触发，
+     * {@link CreditService#credit} 的 {@code (biz_id, biz_type, type)} 幂等保证重试不重复入账
+     * （若首次部分提交了 trial credit，重试静默 no-op；若全回滚则重试重新赠送——两种情况均正确）。
+     *
+     * <p>事务内全是 DB 操作（sms_code markUsed / incrementErrCount / app_user insert / 钩子 3 步），
+     * 无外部 HTTP 调用（SMS 发送在 {@link #sendCode}，不在本方法），持锁时长亚秒级，安全。
      */
+    @Transactional
     public LoginResult login(String phone, String code) {
         checkLocked(phone);
 
@@ -125,8 +133,9 @@ public class AuthService {
             // default_platform / profile_completeness / token_version 走 DB 默认值
             appUserMapper.insert(user);
             isNew = true;
-            // 注册钩子（跨 bean @Transactional）：建账 + trial 单 + 送体验额度。login 自身非事务，
-            // app_user 已 auto-commit；钩子失败仅回滚钩子三步，不破坏 app_user——可重新登录重试（幂等）。
+            // 注册钩子（跨 bean @Transactional(REQUIRED)）：建账 + trial 单 + 送体验额度。加入 login 的事务，
+            // 与 app_user 插入同生共死——钩子失败则 app_user 一并回滚，重试登录 isNew=true 触发重新挂账
+            // （credit 幂等保证不重复入账）。
             rechargeOrderService.onUserRegistered(user.getId());
         }
         String token = jwtUtil.issue(user.getId(), "user", user.getTokenVersion() == null ? 0 : user.getTokenVersion());

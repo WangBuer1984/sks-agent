@@ -29,7 +29,8 @@ import org.springframework.transaction.annotation.Transactional;
  *       实际生成几条感受价值。
  *   <li><b>开通</b>（{@link #open}）：管理端「开通」按钮。trial 单存在 → 首次开通：转 trial→done +
  *       回填 pkg/amount/admin_user_id/opened_at/is_first_charge + credit 套餐 + （首充时）credit
- *       bonus 10；trial 单不存在 → 复购：新建 done 单 + credit 套餐（无 bonus）。
+ *       bonus 10；trial 单不存在 → 复购：新建 done 单 + credit 套餐 + （首充时，孤儿边缘场景）credit
+ *       bonus 10。首充口径在两分支统一用 {@link RechargeOrderMapper#countPriorDoneRecharge}==0。
  *   <li><b>补偿</b>（{@link #compensate}）：建 {@code order_type='compensate'} 的 done 单留痕 +
  *       credit 补偿额度。补偿单 <b>不参与首充判定</b>（{@code order_type} 不同，天然排除）。
  * </ol>
@@ -82,9 +83,10 @@ public class RechargeOrderService {
      * {@code @Transactional}）：① {@link CreditService#ensureAccount} → ② {@link #createTrialOrder} →
      * ③ {@link CreditService#credit} 送体验额度。
      *
-     * <p>独立事务方法（不被 login 的非事务边界吞没）：login 自身非 {@code @Transactional}，本方法自给自足
-     * 一个事务，3 步要么全成要么全滚。login 的 app_user 插入已先 auto-commit，本方法失败回滚不影响
-     * app_user 落库——用户可重新发码登录触发重试（{@link CreditService#credit} 幂等，重试不重复入账）。
+     * <p>本方法 {@code @Transactional(REQUIRED)}：从 {@link com.sks.auth.AuthService#login}（已
+     * {@code @Transactional}）调用时加入 login 事务——app_user 插入与钩子 3 步同生共死；本方法失败
+     * 则 app_user 一并回滚，重试登录 {@code isNew=true} 重新触发本钩子，{@link CreditService#credit}
+     * 的 {@code (biz_id, biz_type, type)} 幂等保证重试不重复入账。
      */
     @Transactional
     public void onUserRegistered(long userId) {
@@ -135,15 +137,17 @@ public class RechargeOrderService {
                     trial.getId(), pkg, amount, adminUserId, isFirst);
             orderId = trial.getId();
         } else {
-            // 复购：直接建 done 单。已有 done recharge 单 → 非首充。
-            isFirst = false;
+            // 复购：直接建 done 单。首充口径与首次开通分支一致——countPriorDoneRecharge==0 才算首充
+            // （覆盖孤儿 app_user 边缘场景：钩子失败回滚导致无 trial 单、无 done 单，后续 open 仍应享首充 bonus）。
+            // 正常复购路径（已有 done recharge 单，count≥1）→ isFirst=false，无 bonus，行为不变。
+            isFirst = rechargeOrderMapper.countPriorDoneRecharge(userId) == 0;
             RechargeOrder o = new RechargeOrder();
             o.setUserId(userId);
             o.setOrderType("recharge");
             o.setPkg(pkg);
             o.setAmount(amount);
             o.setStatus("done");
-            o.setIsFirstCharge(false);
+            o.setIsFirstCharge(isFirst);
             o.setAdminUserId(adminUserId);
             o.setOpenedAt(java.time.OffsetDateTime.now());
             rechargeOrderMapper.insert(o);
