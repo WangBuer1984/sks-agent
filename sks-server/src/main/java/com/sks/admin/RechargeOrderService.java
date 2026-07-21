@@ -83,10 +83,15 @@ public class RechargeOrderService {
      * {@code @Transactional}）：① {@link CreditService#ensureAccount} → ② {@link #createTrialOrder} →
      * ③ {@link CreditService#credit} 送体验额度。
      *
-     * <p>本方法 {@code @Transactional(REQUIRED)}：从 {@link com.sks.auth.AuthService#login}（已
-     * {@code @Transactional}）调用时加入 login 事务——app_user 插入与钩子 3 步同生共死；本方法失败
-     * 则 app_user 一并回滚，重试登录 {@code isNew=true} 重新触发本钩子，{@link CreditService#credit}
-     * 的 {@code (biz_id, biz_type, type)} 幂等保证重试不重复入账。
+     * <p>本方法 {@code @Transactional(REQUIRED)}：从 {@link com.sks.auth.AuthService#completeLogin}
+     * （正确码路径的 {@code @Transactional} 方法，经 self-proxy 调用）调用时加入其事务——app_user 插入
+     * 与钩子 3 步同生共死；本方法失败则 app_user 一并回滚，重试登录 {@code isNew=true} 重新触发本钩子，
+     * {@link CreditService#credit} 的 {@code (biz_id, biz_type, type)} 幂等保证重试不重复入账。
+     *
+     * <p><strong>注意</strong>：错误码路径（{@code incrementErrCount} + 抛 {@code BizException}）留在
+     * 非 {@code @Transactional} 的 {@link com.sks.auth.AuthService#login} 中，保证 {@code err_count}
+     * 自动提交、5 次错误锁定生效——切勿把 {@code login} 整体改为 {@code @Transactional}，否则
+     * {@code BizException}（{@code RuntimeException}）会回滚 {@code err_count}、静默破坏锁定。
      */
     @Transactional
     public void onUserRegistered(long userId) {
