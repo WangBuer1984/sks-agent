@@ -16,6 +16,7 @@ import com.sks.user.AppUser;
 import com.sks.user.AppUserMapper;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -70,6 +71,7 @@ public class ScriptService {
     private final AiClient aiClient;
     private final TopicService topicService;
     private final AppUserMapper appUserMapper;
+    private final DedupChecker dedupChecker;
     private final TransactionTemplate transactionTemplate;
 
     public ScriptService(
@@ -79,6 +81,7 @@ public class ScriptService {
             AiClient aiClient,
             TopicService topicService,
             AppUserMapper appUserMapper,
+            DedupChecker dedupChecker,
             PlatformTransactionManager transactionManager) {
         this.scriptMapper = scriptMapper;
         this.cardCitationMapper = cardCitationMapper;
@@ -86,6 +89,7 @@ public class ScriptService {
         this.aiClient = aiClient;
         this.topicService = topicService;
         this.appUserMapper = appUserMapper;
+        this.dedupChecker = dedupChecker;
         // 用于把回填 UPDATE + 引用 INSERT 包成一个短事务（Finding #2）——scriptGen HTTP 调用仍在事务外。
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
@@ -93,32 +97,39 @@ public class ScriptService {
     /**
      * 文案生成编排（§4.1 事务链）。
      *
-     * <p><b>不加 {@code @Transactional}</b>——见类注释。返回已成功稿（含本次生成）的 scriptId。
+     * <p><b>不加 {@code @Transactional}</b>——见类注释。返回 {@link GenerateResult}：已成功稿 scriptId +
+     * 可选 {@code dedupWarnScriptId}（命中查重则非空，<b>不阻断</b>，PRD §11.2）。
      *
      * <p>三条路径：
      * <ol>
-     *   <li><b>同平台免扣短路</b>：同选题同平台已有成功稿 → 返回其 id，不扣不调。
+     *   <li><b>同平台免扣短路</b>：同选题同平台已有成功稿 → 返回其 id（dedupWarn=null），不扣不调。
      *   <li><b>切平台再生成（免费）</b>（design §3 line 121-122）：同选题已在任意平台成功过但本平台无成功稿 →
      *       插占位行 → 调 scriptGen（事务外）→ 成功回填+引用（单事务）；失败置 failed 但<b>不退</b>（未扣过）。
      *   <li><b>首生成（扣费）</b>：选题从未成功过 → 插占位行 → 扣费 → 调 scriptGen → 成功回填+引用；
      *       失败置 failed + 退款。
      * </ol>
      *
+     * <p><b>查重（PRD §11.2「命中不阻断」）</b>：仅路径 2/3 的首生成成功才查重——回填提交后、事务之外，
+     * 调 {@link DedupChecker#findSimilar}（本地 SimHash，纯读 + 本地计算，无 DB 写、无额度介入）。
+     * 命中 → 响应带 {@code dedupWarnScriptId}，但稿件仍为 {@code draft}、不退、不阻断。短路路径返回旧稿，
+     * 不再查重（旧稿本就存在、无新文本可比）。查重<b>不</b>包在 {@link #backfillAndCite} 事务里——它是
+     * 快速本地计算 + 一次 SELECT，单独短读即可，不应与回填事务耦合（若查重异常也不应回滚已提交的回填）。
+     *
      * @param userId  当前用户（来自 JWT）
      * @param topicId 选题 id（必须属于本用户）
      * @param platform 平台；null/空 → 取 {@code app_user.default_platform}（§4.2 默认主平台）
      */
-    public long generate(long userId, long topicId, String platform) {
+    public GenerateResult generate(long userId, long topicId, String platform) {
         // 1. 解析平台：缺省取用户主平台（IDOR：topicService.get 校验选题归属）
         String plat = resolvePlatform(userId, platform);
 
         // 选题归属校验（跨用户选题 → PARAM_INVALID），同时供 scriptGen 请求拿 title/rationale
         Topic topic = topicService.get(userId, topicId);
 
-        // 2. 同平台免扣短路（§4.2）：同选题同平台已有成功稿 → 返回其 id，不扣不调
+        // 2. 同平台免扣短路（§4.2）：同选题同平台已有成功稿 → 返回其 id，不扣不调（dedupWarn=null）
         Long samePlatformId = scriptMapper.findSuccessfulId(userId, topicId, plat);
         if (samePlatformId != null) {
-            return samePlatformId;
+            return new GenerateResult(samePlatformId, null);
         }
 
         // 3. 切平台再生成判定（design §3 line 121-122）：同选题已在任意平台成功过 → 免费再生成（不扣额度）
@@ -175,8 +186,34 @@ public class ScriptService {
             throw new BizException(ErrorCode.AI_FAILED);
         }
 
-        return scriptId;
+        // 8. 查重（PRD §11.2「命中不阻断」）——回填已提交后、事务之外执行。本地 SimHash + 一次 SELECT，
+        //    纯读、无写、无额度介入。命中 → 仅在响应体带 dedupWarnScriptId，稿件仍 draft、不退、不阻断。
+        //    用 in-memory 的 result（hook/body/cta JsonNode）拼纯文本，避免再读一次 DB。异常隔离：查重失败
+        //    绝不应让已成功的生成抛错（扣过的不退、已 draft 的不变），故包 try/catch 吞掉只记日志语义（warn=null）。
+        Long dedupWarnScriptId = null;
+        try {
+            String plainText =
+                    DedupChecker.flattenPlainText(
+                            result.hook() == null ? null : result.hook().toString(),
+                            result.body() == null ? null : result.body().toString(),
+                            result.cta() == null ? null : result.cta().toString());
+            Optional<Long> warn =
+                    dedupChecker.findSimilar(
+                            userId, scriptId, plainText, dedupChecker.getDefaultThreshold());
+            dedupWarnScriptId = warn.orElse(null);
+        } catch (RuntimeException e) {
+            // 查重失败不应影响已成功的生成——降级为不告警。
+            dedupWarnScriptId = null;
+        }
+        return new GenerateResult(scriptId, dedupWarnScriptId);
     }
+
+    /**
+     * 生成结果：{@code scriptId} + 可选 {@code dedupWarnScriptId}（命中查重则非空，<b>不阻断</b>，PRD §11.2）。
+     * 前端（Create.tsx）据 {@code dedupWarnScriptId != null} 显示黄条 + 「换角度」按钮（前端后续 task）。
+     */
+    public record GenerateResult(long scriptId, Long dedupWarnScriptId) {}
+
 
     /**
      * 回填（UPDATE script → draft + hook/body/cta JSONB）+ 引用插入循环，包在<b>一个</b> {@link TransactionTemplate}

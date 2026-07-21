@@ -131,8 +131,8 @@ class ScriptServiceTest extends AbstractDbTest {
     void regenerateSameTopicNotCharged() {
         creditService.credit(uid, 5, "recharge", "o1", null);
         when(aiClient.scriptGen(any())).thenReturn(okScriptResult());
-        long sid1 = scriptService.generate(uid, topicId, "douyin"); // 扣 1
-        long sid2 = scriptService.generate(uid, topicId, "douyin"); // 同平台同选题免扣、不重调
+        long sid1 = scriptService.generate(uid, topicId, "douyin").scriptId(); // 扣 1
+        long sid2 = scriptService.generate(uid, topicId, "douyin").scriptId(); // 同平台同选题免扣、不重调
         assertEquals(sid1, sid2); // 返回已有稿 id，不新建
         assertEquals(4, creditService.balance(uid)); // 未再扣
         verify(aiClient, times(1)).scriptGen(any()); // 同平台短路，只生成一次
@@ -144,7 +144,7 @@ class ScriptServiceTest extends AbstractDbTest {
     void sentenceRewriteIsFreeAndUpdatesNothingUntilConfirmed() {
         creditService.credit(uid, 5, "recharge", "o1", null);
         when(aiClient.scriptGen(any())).thenReturn(okScriptResult());
-        long sid = scriptService.generate(uid, topicId, "douyin"); // 扣 1 → 4
+        long sid = scriptService.generate(uid, topicId, "douyin").scriptId(); // 扣 1 → 4
         when(aiClient.rewriteSentence(any())).thenReturn("换了说法的新句子");
         String preview = scriptService.rewriteSentence(uid, sid, "body", 0);
         assertEquals(4, creditService.balance(uid)); // 单句重写不扣额度
@@ -199,8 +199,8 @@ class ScriptServiceTest extends AbstractDbTest {
     void sameTopicNotChargedAcrossPlatforms() {
         creditService.credit(uid, 5, "recharge", "o1", null);
         when(aiClient.scriptGen(any())).thenReturn(okScriptResult());
-        long sid1 = scriptService.generate(uid, topicId, "douyin"); // 首生成扣 1 → 4
-        long sid2 = scriptService.generate(uid, topicId, "kuaishou"); // 切平台再生成，免扣
+        long sid1 = scriptService.generate(uid, topicId, "douyin").scriptId(); // 首生成扣 1 → 4
+        long sid2 = scriptService.generate(uid, topicId, "kuaishou").scriptId(); // 切平台再生成，免扣
         assertNotEquals(sid1, sid2); // 新建稿件，非返回旧平台稿
         assertEquals(4, creditService.balance(uid)); // 选题已成功过 → 再生成免费，余额不动
         verify(aiClient, times(2)).scriptGen(any()); // 两次生成都调 Python（再生成本就发生）
@@ -247,7 +247,7 @@ class ScriptServiceTest extends AbstractDbTest {
     void platformDefaultsToUserDefaultPlatform() {
         creditService.credit(uid, 5, "recharge", "o1", null);
         when(aiClient.scriptGen(any())).thenReturn(okScriptResult());
-        long sid = scriptService.generate(uid, topicId, null); // 缺省 → douyin
+        long sid = scriptService.generate(uid, topicId, null).scriptId(); // 缺省 → douyin
         assertEquals(4, creditService.balance(uid));
         String platform =
                 jdbcTemplate.queryForObject(
@@ -261,7 +261,7 @@ class ScriptServiceTest extends AbstractDbTest {
     void editSentencePersists() {
         creditService.credit(uid, 5, "recharge", "o1", null);
         when(aiClient.scriptGen(any())).thenReturn(okScriptResult());
-        long sid = scriptService.generate(uid, topicId, "douyin");
+        long sid = scriptService.generate(uid, topicId, "douyin").scriptId();
         String before = scriptService.get(sid).bodySentence(0);
         scriptService.editSentence(uid, sid, "body", 0, "手改后的句子");
         assertEquals("手改后的句子", scriptService.get(sid).bodySentence(0));

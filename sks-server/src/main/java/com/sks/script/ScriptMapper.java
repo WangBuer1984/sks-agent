@@ -67,6 +67,16 @@ public interface ScriptMapper extends BaseMapper<Script> {
     Long findSuccessfulIdAnyPlatform(@Param("userId") long userId, @Param("topicId") long topicId);
 
     /**
+     * 取用户的<b>历史成功稿</b>（{@code review_state NOT IN ('generating','failed')}，含 draft 与复盘各态）——
+     * 供 {@link DedupChecker#findSimilar} SimHash 查重比对。取 id + hook + body + cta（全文信号，非仅 body）。
+     * 排除刚创建稿由调用方处理（传 excludeScriptId）。纯读、无写、不阻断（PRD §11.2）。
+     */
+    @Select(
+            "SELECT id, hook, body, cta FROM script WHERE user_id = #{userId} "
+                    + "AND review_state NOT IN ('generating','failed') ORDER BY id DESC")
+    List<Script> findSuccessfulForDedup(@Param("userId") long userId);
+
+    /**
      * 取稿件（含 hook/body/cta JSONB 文本）。带 user_id 过滤（IDOR 防护，§5.1）——跨用户返回 null。
      */
     @Select("SELECT * FROM script WHERE id = #{id} AND user_id = #{userId}")

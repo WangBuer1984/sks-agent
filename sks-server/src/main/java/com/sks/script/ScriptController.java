@@ -40,12 +40,15 @@ public class ScriptController {
         this.cardCitationMapper = cardCitationMapper;
     }
 
-    /** 生成文案（§4.1 事务链）。platform 缺省取用户主平台。返回新稿详情（含 citedCardIds）。 */
+    /**
+     * 生成文案（§4.1 事务链）。platform 缺省取用户主平台。返回新稿详情（含 citedCardIds +
+     * {@code dedupWarnScriptId}——命中查重则非空，<b>不阻断</b>，PRD §11.2；前端黄条 + 「换角度」按钮）。
+     */
     @PostMapping("/generate")
     public ApiResponse<ScriptDetail> generate(
             @AuthenticationPrincipal Long userId, @RequestBody GenerateRequest req) {
-        long id = scriptService.generate(userId, req.topicId(), req.platform());
-        return ApiResponse.ok(detailOf(userId, id));
+        ScriptService.GenerateResult r = scriptService.generate(userId, req.topicId(), req.platform());
+        return ApiResponse.ok(detailOf(userId, r.scriptId(), r.dedupWarnScriptId()));
     }
 
     /** 稿件列表（可选 review_state 过滤，如 ?state=draft）。不含 hook/body/cta 正文（列表轻量）。 */
@@ -56,11 +59,11 @@ public class ScriptController {
         return ApiResponse.ok(scriptService.list(userId, state).stream().map(ScriptSummary::of).toList());
     }
 
-    /** 稿件详情（含 hook/body/cta JSON 文本 + citedCardIds）。 */
+    /** 稿件详情（含 hook/body/cta JSON 文本 + citedCardIds；{@code dedupWarnScriptId} 恒为 null——仅生成响应带）。 */
     @GetMapping("/{id}")
     public ApiResponse<ScriptDetail> get(
             @AuthenticationPrincipal Long userId, @PathVariable long id) {
-        return ApiResponse.ok(detailOf(userId, id));
+        return ApiResponse.ok(detailOf(userId, id, null));
     }
 
     /** 单句手改：{section, idx, text}。IDOR：跨用户稿件 → PARAM_INVALID。 */
@@ -83,10 +86,10 @@ public class ScriptController {
         return ApiResponse.ok(new RewritePreview(preview));
     }
 
-    private ScriptDetail detailOf(long userId, long scriptId) {
+    private ScriptDetail detailOf(long userId, long scriptId, Long dedupWarnScriptId) {
         Script s = scriptService.getOwned(userId, scriptId);
         List<Long> cited = cardCitationMapper.findCardIdsByScript(scriptId);
-        return ScriptDetail.of(s, cited);
+        return ScriptDetail.of(s, cited, dedupWarnScriptId);
     }
 
     // ---- 请求 / 响应 DTO ----
@@ -99,7 +102,10 @@ public class ScriptController {
 
     public record RewritePreview(String preview) {}
 
-    /** 稿件详情（含三段 JSON 文本 + 引用卡片 id 列表）。 */
+    /**
+     * 稿件详情（含三段 JSON 文本 + 引用卡片 id 列表 + 可选查重告警）。{@code dedupWarnScriptId} 仅
+     * 生成响应（{@code POST /generate}）非空（命中近复稿），其余端点恒为 null。
+     */
     public record ScriptDetail(
             Long id,
             Long topicId,
@@ -110,8 +116,9 @@ public class ScriptController {
             String reviewState,
             List<Long> citedCardIds,
             OffsetDateTime createdAt,
-            OffsetDateTime updatedAt) {
-        public static ScriptDetail of(Script s, List<Long> cited) {
+            OffsetDateTime updatedAt,
+            Long dedupWarnScriptId) {
+        public static ScriptDetail of(Script s, List<Long> cited, Long dedupWarnScriptId) {
             return new ScriptDetail(
                     s.getId(),
                     s.getTopicId(),
@@ -122,7 +129,8 @@ public class ScriptController {
                     s.getReviewState(),
                     cited,
                     s.getCreatedAt(),
-                    s.getUpdatedAt());
+                    s.getUpdatedAt(),
+                    dedupWarnScriptId);
         }
     }
 
