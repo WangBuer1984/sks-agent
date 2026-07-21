@@ -1,6 +1,7 @@
 package com.sks.kb;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -21,4 +22,8 @@ public interface CardCitationMapper extends BaseMapper<CardCitation> {
     /** 某卡的引用数（删除守卫）。引用不软删，直接 count 全量。 */
     @Select("SELECT COUNT(*) FROM card_citation WHERE card_id = #{cardId}")
     int countByCard(@Param("cardId") long cardId);
+
+    /** 某稿件引用的卡片 id 列表（创作页右栏「引用卡片」展示 + generate 响应回传）。 */
+    @Select("SELECT card_id FROM card_citation WHERE script_id = #{scriptId} ORDER BY id")
+    List<Long> findCardIdsByScript(@Param("scriptId") long scriptId);
 }

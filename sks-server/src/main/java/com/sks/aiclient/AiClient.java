@@ -1,10 +1,13 @@
 package com.sks.aiclient;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.sks.common.BizException;
 import com.sks.common.ErrorCode;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -103,6 +106,82 @@ public class AiClient {
     public boolean safetyCheck(String text) {
         SafetyResponse resp = post("/ai/safety/check", new SafetyRequest(text), SafetyResponse.class);
         return resp.safe();
+    }
+
+    // ---- script_gen / rewrite_sentence（Task 1.4）----
+
+    /**
+     * Python {@code POST /ai/script_gen} 请求体（见 sks-ai/app/api/script_gen.py ScriptGenRequest）。
+     *
+     * <p>字段名用 {@code @JsonProperty} 对齐 Python 的 snake_case（{@code user_id}），因 RestClient 默认
+     * Jackson 不开 SNAKE_CASE——定向标注，不动基座共享 mapper。
+     */
+    public record ScriptGenRequest(
+            @JsonProperty("user_id") long userId,
+            @JsonProperty("topic") TopicRequest topic,
+            @JsonProperty("profile") Map<String, Object> profile,
+            @JsonProperty("platform") String platform) {}
+
+    /** Python {@code TopicRequest {title, rationale}}。 */
+    public record TopicRequest(
+            @JsonProperty("title") String title,
+            @JsonProperty("rationale") String rationale) {}
+
+    /**
+     * Python {@code POST /ai/script_gen} 响应（见 ScriptGenResponse）。
+     *
+     * <p>{@code hook/body/cta} 为 JSON 对象（{@code {sentences:[{idx,text}]}}}），Java 侧用 {@link JsonNode}
+     * 承载——Jackson 能把 JSON 对象反序列化成 JsonNode 树，无需定义严格 POJO；service 把
+     * {@code node.toString()} 写进 {@code script} 的 JSONB 列（与 {@code KbCard.content} 同模式）。
+     *
+     * <p><b>blocked 不在此抛异常</b>——返回 {@code blocked=true} 的结果对象，让
+     * {@link com.sks.script.ScriptService#generate} 先置 failed + 退款 再抛
+     * {@link ErrorCode#CONTENT_BLOCKED}（设计 §4.1：refund 必须在任何异常抛出前完成）。
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ScriptGenResult(
+            boolean blocked,
+            JsonNode hook,
+            JsonNode body,
+            JsonNode cta,
+            @JsonProperty("cited_card_ids") List<Long> citedCardIds) {}
+
+    /**
+     * 调 Python {@code POST /ai/script_gen}，返回生成结果（含 {@code blocked} 标志）。
+     *
+     * <p>非 2xx（含 token 不匹配的 403 / 422 / 5xx / 超时）由基座 {@link #post} 翻译为
+     * {@link ErrorCode#AI_FAILED}。<b>不</b>在此处理 {@code blocked}——交由调用方编排退款。
+     */
+    public ScriptGenResult scriptGen(ScriptGenRequest req) {
+        return post("/ai/script_gen", req, ScriptGenResult.class);
+    }
+
+    /**
+     * Python {@code POST /ai/rewrite_sentence} 请求体（见 RewriteSentenceRequest）。
+     */
+    public record RewriteSentenceRequest(
+            @JsonProperty("sentence") String sentence,
+            @JsonProperty("section") String section,
+            @JsonProperty("full_script") Map<String, Object> fullScript,
+            @JsonProperty("profile") Map<String, Object> profile) {}
+
+    /** Python {@code RewriteSentenceResponse {text, blocked}}（内部，不暴露给 service）。 */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record RewriteResponse(String text, boolean blocked) {}
+
+    /**
+     * 调 Python {@code POST /ai/rewrite_sentence}，返回新句文本（预览）。
+     *
+     * <p>与 {@link #scriptGen} 不同：{@code blocked=true} 时<b>在此抛</b> {@link ErrorCode#CONTENT_BLOCKED}
+     * ——单句重写不扣额度、无需 refund 编排，service 直接让异常冒泡即可（设计 §2.1：原句保留）。
+     * 成功返回新句文本（service 作为预览返回前端，不落库）。
+     */
+    public String rewriteSentence(RewriteSentenceRequest req) {
+        RewriteResponse resp = post("/ai/rewrite_sentence", req, RewriteResponse.class);
+        if (resp.blocked()) {
+            throw new BizException(ErrorCode.CONTENT_BLOCKED);
+        }
+        return resp.text();
     }
 
     // ---- 基座：headers + timeout + retry + error translation + MDC ----

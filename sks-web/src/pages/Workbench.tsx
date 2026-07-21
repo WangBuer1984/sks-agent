@@ -88,6 +88,12 @@ export default function Workbench() {
               完整度 {completeness}%
             </span>
             <Link
+              to="/create"
+              className="rounded-lg bg-paper-primary px-3.5 py-2 text-[13px] font-bold text-white transition hover:bg-[#6e4620]"
+            >
+              创作 →
+            </Link>
+            <Link
               to="/kb"
               className="rounded-lg border border-[#d8c9b2] bg-paper-card px-3.5 py-2 text-[13px] font-bold text-paper-primary transition hover:bg-[#f7f2e7]"
             >
