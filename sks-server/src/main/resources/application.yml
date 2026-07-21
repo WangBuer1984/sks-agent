@@ -29,3 +29,8 @@ logging:
 
 sks:
   trial-credit: ${TRIAL_CREDIT:3}
+  # Java→Python 内网调用（AiClient 基座用）：base-url 在 docker 内是 http://sks-ai:8000，
+  # 本地 dev 可用 http://localhost:8000；service-token 来自 .env SERVICE_TOKEN（Python verify_service_token 校验同值）。
+  ai:
+    base-url: ${SKS_AI_BASE_URL:http://sks-ai:8000}
+  service-token: ${SERVICE_TOKEN:}

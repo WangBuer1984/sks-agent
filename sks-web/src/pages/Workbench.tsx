@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { type MeResponse, fetchMe } from '../api/auth';
 import { getBizMessage } from '../api/client';
 import { useAuthStore } from '../store/auth';
@@ -83,9 +83,17 @@ export default function Workbench() {
       <section className="rounded-2xl border border-paper-line bg-paper-card p-6 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-bold text-paper-ink">个人资料</h2>
-          <span className="rounded-full border border-[#ecd4ae] bg-[#fdf3e4] px-2.5 py-1 text-[11px] font-bold text-[#a8712e]">
-            完整度 {completeness}%
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="rounded-full border border-[#ecd4ae] bg-[#fdf3e4] px-2.5 py-1 text-[11px] font-bold text-[#a8712e]">
+              完整度 {completeness}%
+            </span>
+            <Link
+              to="/kb"
+              className="rounded-lg border border-[#d8c9b2] bg-paper-card px-3.5 py-2 text-[13px] font-bold text-paper-primary transition hover:bg-[#f7f2e7]"
+            >
+              知识库 →
+            </Link>
+          </div>
         </div>
         <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
           <Field label="行业" value={data?.industry} />

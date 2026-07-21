@@ -19,10 +19,16 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
-    /** 业务异常：返回体里携带具体 ErrorCode。 */
+    /**
+     * 业务异常：返回体里携带具体 ErrorCode。
+     *
+     * <p>用 {@link BizException#getMessage()} 作为 body 的 message——对默认构造的 BizException
+     * 来说 == {@code errorCode.msg()}（无回归），对 {@link BizException#BizException(ErrorCode, String)}
+     * 的自定义消息变体则透传动态文案（如「有 3 篇稿件引用此卡」）。
+     */
     @ExceptionHandler(BizException.class)
     public ResponseEntity<ApiResponse<Void>> handleBiz(BizException ex) {
-        return ResponseEntity.ok(ApiResponse.fail(ex.errorCode()));
+        return ResponseEntity.ok(new ApiResponse<>(ex.errorCode().code(), ex.getMessage(), null));
     }
 
     /** @RequestBody 校验失败：聚合字段错误，返回 4000。 */
