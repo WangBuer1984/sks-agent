@@ -105,6 +105,12 @@ export default function Workbench() {
             >
               知识库 →
             </Link>
+            <Link
+              to="/analyze"
+              className="rounded-lg border border-[#d8c9b2] bg-paper-card px-3.5 py-2 text-[13px] font-bold text-paper-primary transition hover:bg-[#f7f2e7]"
+            >
+              拆解 →
+            </Link>
           </div>
         </div>
         <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">

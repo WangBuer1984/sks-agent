@@ -164,7 +164,7 @@ class TopicServiceTest extends AbstractDbTest {
         kbCardService.create(uid, "B", "产品", "口播选题指南", "{\"tag\":\"good\"}");
 
         String hotTitle = "新手如何挑选口播选题";
-        when(aiClient.hotBoard()).thenReturn(List.of(new AiClient.HotItem(hotTitle, "热点理由", null)));
+        when(aiClient.hotBoard()).thenReturn(List.of(new AiClient.HotItem(hotTitle, 100, 5)));
 
         int n = topicService.scoreHotTopicsForUser(uid);
 
@@ -179,7 +179,7 @@ class TopicServiceTest extends AbstractDbTest {
     /** 无 B 卡匹配（用户无 B 层卡片）→ 不入 hot 选题。 */
     @Test
     void hotPathSkipsWhenNoBMatch() {
-        when(aiClient.hotBoard()).thenReturn(List.of(new AiClient.HotItem("不相干的热点", "x", null)));
+        when(aiClient.hotBoard()).thenReturn(List.of(new AiClient.HotItem("不相干的热点", 1, 1)));
         int n = topicService.scoreHotTopicsForUser(uid);
         assertEquals(0, n);
         verify(aiClient).embed(any());

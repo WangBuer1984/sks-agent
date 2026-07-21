@@ -376,31 +376,112 @@ public class AiClient {
                 .text();
     }
 
-    // ---- hotBoard（Task 1.7 热点榜；P1 桩实现，真实接线 P3 Task 3.3 Step 3.5）----
+    // ---- hotBoard（Task 1.7 热点榜；P3 Task 3.3 Step 3.5 真实接线）----
 
     /**
-     * 热点榜条目（Python {@code GET /ai/hot_board} 返回数组的一项）。P1 仅 title 必填；rationale / pillar
-     * 为可选 hint，P3 TikHub 接线后由 Python 侧填充。
+     * 热点榜条目（Python {@code GET /ai/hot_board} 返回数组的一项，对齐 HotItemResponse）。
      *
-     * <p><b>非 UGC</b>：热点标题来自平台热榜（TikHub），不经 safetyCheck——与用户自建 faq 选题（UGC）
-     * 区别对待（brief 明确不双重过审）。
+     * <p>字段名用 {@code @JsonProperty} 对齐 Python snake_case（{@code hot_index} / {@code video_count}）。
+     * <b>非 UGC</b>：热点标题来自平台热榜（TikHub），不经 safetyCheck——与用户自建 faq 选题（UGC）
+     * 区别对待（brief 明确不双重过审）。{@code hotIndex} / {@code videoCount} 为热度/视频数 hint，
+     * Java 侧目前仅用 title 打分入库（{@link com.sks.topic.TopicService#scoreHotTopicsForUser}），
+     * 两个字段保留供后续 V1.1 排序 / 配额使用。
      */
-    public record HotItem(String title, String rationale, String pillar) {}
+    public record HotItem(
+            String title,
+            @JsonProperty("hot_index") Integer hotIndex,
+            @JsonProperty("video_count") Integer videoCount) {}
 
     /**
      * 调 Python {@code GET /ai/hot_board} 取当前平台热点榜。
      *
-     * <p><b>P1 桩实现</b>：返回空列表 + WARN 日志。真实接线（Python 调 TikHub 热榜）在
-     * <b>P3 Task 3.3 Step 3.5</b>。桩保证 P1 可编译 + 可测（测试 mock 之）；运行期 {@link
-     * com.sks.topic.HotTopicJob} 跑了也不入库、不报错（空列表 → 打分循环 0 次）。
-     *
-     * <p>方法签名 + {@link HotItem} 形状已定为 P3 实现对齐——P3 仅替换方法体（删桩 + 真 HTTP GET），
-     * 不动调用方（{@link com.sks.topic.TopicService#scoreHotTopicsForUser} / {@link
-     * com.sks.topic.HotTopicJob}）。
+     * <p>P3 Task 3.3 Step 3.5 真实接线：替换 P1 空桩为 {@link #get} 实调。Python 封装 TikHub 热榜
+     * （Task 3.2 已产出）。非 2xx（含 token 不匹配 / TikHub 不可达 502）由基座 {@link #get} 翻译为
+     * {@link BizException}(AI_FAILED)；调用方 {@link com.sks.topic.HotTopicJob} per-user try/catch
+     * 兜底，单次失败不影响其他用户。
      */
     public List<HotItem> hotBoard() {
-        log.warn("hotBoard not wired (P3 Task 3.3 Step 3.5); returning empty");
-        return List.of();
+        HotItem[] arr = get("/ai/hot_board", HotItem[].class);
+        return arr == null ? List.of() : java.util.Arrays.asList(arr);
+    }
+
+    // ---- analyze（Task 3.3 拆视频 / 拆账号编排）----
+
+    /**
+     * Python {@code POST /ai/analyze/precheck {url}} 响应（对齐 PrecheckResponse）。
+     *
+     * <p>{@code video_count} 为 TikHub 首页<b>估算</b>（≤20，Task 3.1 Q2 fix），非精确总数——
+     * 拆账号扣费公式 {@code max(1,min(10,floor(N/2)))} 用此估算，是 §4.3 接受的契约。
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Precheck(boolean reachable, @JsonProperty("video_count") int videoCount) {}
+
+    /** Python {@code POST /ai/analyze/precheck} 请求体 {@code {"url":"..."}}。 */
+    private record PrecheckRequest(String url) {}
+
+    /**
+     * 调 Python {@code POST /ai/analyze/precheck}（免费，不扣费）。账号拆解预检：校验 URL 可达 +
+     * 取首页视频数估算。不可达 / N=0 由 {@link com.sks.analyze.AnalyzeService#startAccount} 拒绝（不扣费）。
+     */
+    public Precheck precheck(String url) {
+        return post("/ai/analyze/precheck", new PrecheckRequest(url), Precheck.class);
+    }
+
+    /**
+     * Python {@code POST /ai/analyze/video/text} 响应（对齐 structure_video 返回 dict）。
+     *
+     * <p>成功返回 {@code {structure, why_hot, framework, diff_hint}}；命中安全返回 {@code {blocked:true}}
+     * （Python 不写 result，Java 决策退/不退）。字段名用 {@code @JsonProperty} 对齐 Python snake_case。
+     * 与 {@link ScriptGenResult} 同模式：<b>不在此处理 blocked</b>——交由 {@link
+     * com.sks.analyze.AnalyzeService#startVideoText} 编排退款 + 抛 {@link ErrorCode#CONTENT_BLOCKED}。
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record VideoTextResult(
+            boolean blocked,
+            String structure,
+            @JsonProperty("why_hot") String whyHot,
+            String framework,
+            @JsonProperty("diff_hint") String diffHint) {}
+
+    /** Python {@code POST /ai/analyze/video/text} 请求体 {@code {task_id, transcript}}（对齐 VideoTextRequest）。 */
+    public record VideoTextRequest(
+            @JsonProperty("task_id") long taskId, String transcript) {}
+
+    /**
+     * 调 Python {@code POST /ai/analyze/video/text}（同步结构化）。Python 内部会写
+     * {@code analyze_task(status='done', result)}，但 Java 仍按 §4.1 占位模式 backfill
+     * （幂等重写，防 Python 写后 Java 读 HTTP 失败的中间态）。
+     */
+    public VideoTextResult analyzeVideoText(long taskId, String transcript) {
+        return post("/ai/analyze/video/text", new VideoTextRequest(taskId, transcript), VideoTextResult.class);
+    }
+
+    /** Python {@code POST /ai/analyze/video/link} / {@code POST /ai/analyze/account} 的 202 响应体 {@code {task_id}}。 */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record AnalyzeAccepted(@JsonProperty("task_id") long taskId) {}
+
+    /** Python {@code POST /ai/analyze/video/link} 请求体 {@code {task_id, url}}（对齐 VideoLinkRequest）。 */
+    public record VideoLinkRequest(@JsonProperty("task_id") long taskId, String url) {}
+
+    /**
+     * 调 Python {@code POST /ai/analyze/video/link}（异步 202）。Python 端点先写 running+updated_at，
+     * 再 BackgroundTasks 跑 transcribe→结构化→done/failed（进度直写 analyze_task）。
+     * 返回 202 body {@code {task_id}}——Java 仅确认受理，实际结果由 {@link com.sks.analyze.AnalyzeTaskPoller} 轮询。
+     */
+    public AnalyzeAccepted analyzeVideoLink(long taskId, String url) {
+        return post("/ai/analyze/video/link", new VideoLinkRequest(taskId, url), AnalyzeAccepted.class);
+    }
+
+    /** Python {@code POST /ai/analyze/account} 请求体 {@code {task_id, url}}（对齐 AccountRequest）。 */
+    public record AccountRequest(@JsonProperty("task_id") long taskId, String url) {}
+
+    /**
+     * 调 Python {@code POST /ai/analyze/account}（异步 202）。Python BackgroundTasks 跑 TOP20→逐条→
+     * 三层→done/partial/failed，进度 {@code floor(done*100/total)} 直写 analyze_task。
+     * 返回 202 body {@code {task_id}}。
+     */
+    public AnalyzeAccepted analyzeAccount(long taskId, String url) {
+        return post("/ai/analyze/account", new AccountRequest(taskId, url), AnalyzeAccepted.class);
     }
 
     // ---- 基座：headers + timeout + retry + error translation + MDC ----

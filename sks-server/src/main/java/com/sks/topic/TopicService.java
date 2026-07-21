@@ -1,5 +1,6 @@
 package com.sks.topic;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.sks.aiclient.AiClient;
 import com.sks.common.BizException;
 import com.sks.common.ErrorCode;
@@ -135,8 +136,8 @@ public class TopicService {
             t.setUserId(userId);
             t.setSource("hot");
             t.setTitle(title);
-            t.setRationale(item.rationale() != null ? item.rationale() : ("热点匹配:" + m.title()));
-            t.setPillar(item.pillar());
+            t.setRationale("热点匹配:" + m.title());
+            t.setPillar(null);
             topicMapper.insert(t);
             inserted++;
             log.info(
@@ -145,6 +146,54 @@ public class TopicService {
                     title,
                     m.id(),
                     m.distance());
+        }
+        return inserted;
+    }
+
+    /**
+     * 拆账号完成后写入 {@code source='benchmark'} 选题（Task 1.7 benchmark 路，P3 Task 3.3 接线）。
+     *
+     * <p>从 {@code analyze_task.result} 的 {@code videos} 列表提取每条视频标题作为 benchmark 选题
+     * （这些是该账号跑出来的爆款，可作为用户后续创作的参考选题）；{@code rationale} 用
+     * {@code patterns}（规律归纳）填充——让用户在选题列表看到「这条选题来自某账号的规律归纳」。
+     *
+     * <p><b>幂等</b>：按 {@code (user_id, source='benchmark', title)} 查重，已存在则跳过——
+     * 轮询器重复 reconcile 不会双插。{@code topic} 表无 task_id 外链列，故以标题为去重键
+     * （同一账号重复拆解会产出相同标题集，跳过即正确）。
+     *
+     * <p><b>非 UGC</b>：标题来自 TikHub（账号公开爆款），与 hot 路同口径——<b>不</b>过 safetyCheck，
+     * 直接 {@code topicMapper.insert}（与 {@link #scoreHotTopicsForUser} 同模式）。
+     *
+     * @return 实际入库的 benchmark 选题条数
+     */
+    public int writeBenchmarkTopics(long userId, JsonNode result) {
+        if (result == null) {
+            return 0;
+        }
+        JsonNode videos = result.get("videos");
+        if (videos == null || !videos.isArray() || videos.isEmpty()) {
+            return 0;
+        }
+        String patterns = result.path("patterns").asText("");
+        int inserted = 0;
+        for (JsonNode v : videos) {
+            String title = v.path("title").asText("");
+            if (title.isBlank()) {
+                continue;
+            }
+            if (topicMapper.countByUserSourceTitle(userId, "benchmark", title) > 0) {
+                continue;
+            }
+            Topic t = new Topic();
+            t.setUserId(userId);
+            t.setSource("benchmark");
+            t.setTitle(title);
+            t.setRationale(patterns.isBlank() ? "拆账号规律归纳" : patterns);
+            topicMapper.insert(t);
+            inserted++;
+        }
+        if (inserted > 0) {
+            log.info("benchmark topics inserted: user={}, count={}", userId, inserted);
         }
         return inserted;
     }

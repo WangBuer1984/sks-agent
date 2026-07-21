@@ -40,4 +40,14 @@ public interface TopicMapper extends BaseMapper<Topic> {
                     + "AND (#{source}::text IS NULL OR source = #{source}) "
                     + "ORDER BY pillar ASC NULLS LAST, created_at DESC, id DESC")
     List<Topic> listByUserWithSource(@Param("userId") long userId, @Param("source") String source);
+
+    /**
+     * 按 {@code (user_id, source, title)} 计数——拆账号 done 后写 {@code source='benchmark'} 选题的
+     * 幂等去重守卫（Task 3.3）。{@code topic} 表无 task_id 外链，故以标题为去重键；轮询器重复
+     * reconcile 时命中已存即跳过，不双插。
+     */
+    @Select(
+            "SELECT COUNT(*) FROM topic WHERE user_id = #{userId} AND source = #{source} AND title = #{title}")
+    int countByUserSourceTitle(
+            @Param("userId") long userId, @Param("source") String source, @Param("title") String title);
 }
