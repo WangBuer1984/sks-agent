@@ -36,5 +36,9 @@ public abstract class AbstractDbTest {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
+        // 测试专用 JWT 密钥：≥32 字节，避开 JwtConfig 的「空 / 占位」fail-fast 守卫。
+        // 仅用于 @SpringBootTest 上下文，不进入生产环境。
+        registry.add("JWT_SECRET_USER", () -> "test-user-secret-32bytes-min-xxxxxxxxxx");
+        registry.add("JWT_SECRET_ADMIN", () -> "test-admin-secret-32bytes-min-xxxxxxxxx");
     }
 }
