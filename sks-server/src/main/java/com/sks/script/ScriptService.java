@@ -17,6 +17,8 @@ import com.sks.user.AppUserMapper;
 import java.util.List;
 import java.util.Map;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * 稿件创作编排服务——产品核心价值闭环（§4.1 额度事务链）。
@@ -31,17 +33,24 @@ import org.springframework.stereotype.Service;
  *       {@code @Transactional(REQUIRED)}）。从非事务的 {@link #generate} 调用 → 各自开独立短事务提交。
  *       <b>不要</b>给 {@link #generate} 加 {@code @Transactional}（会让 deduct/refund JOIN 同一 tx，
  *       失败路径 refund 落 rollback-only tx 不持久化——0.7 err_count 掩盖 bug 同款）。
- *   <li>顺序（「先扣后调，失败必退」）：
+ *   <li>顺序（「先扣后调，失败必退」；切平台再生成是「不扣不调后扣退」的变体）：
  *       <ol>
- *         <li>同选题免扣检查：已有非 generating/failed 成功稿 → 返回其 id，不扣不调。
- *         <li>插占位行 {@code script(review_state='generating')} 拿 {@code scriptId}（扣费流水 biz_id 必须
- *             在扣费前稳定，退款幂等靠它）——自动提交，无环绕事务。
- *         <li>{@link CreditService#deduct}(uid,1,"generate",scriptId)——独立短事务提交。
- *             余额不足 → 占位行置 failed + 抛 INSUFFICIENT_BALANCE（<b>不退</b>，没扣过）。
+ *         <li>同平台免扣检查：同选题同平台已有非 generating/failed 成功稿 → 返回其 id，不扣不调。
+ *         <li>切平台再生成判定（design §3 line 121-122「切平台再生成、同选题不加扣」）：同选题已在<b>任意</b>
+ *             平台成功过但本平台无成功稿 → 走<b>免费再生成</b>路径（选题已成功过 → 再生成不扣额度；
+ *             省约 2/3 token 的前提是再生成本就发生）。否则走首生成（扣费）路径。
+ *         <li>插占位行 {@code script(review_state='generating', platform=目标平台)} 拿 {@code scriptId}
+ *             （首生成作扣费流水 biz_id 必须在扣费前稳定、退款幂等靠它；再生成虽不扣费但 scriptId 仍需稳定，
+ *             供引用溯源与失败行可追溯）——自动提交，无环绕事务。
+ *         <li><b>仅首生成</b>调 {@link CreditService#deduct}(uid,1,"generate",scriptId)——独立短事务提交。
+ *             余额不足 → 占位行置 failed + 抛 INSUFFICIENT_BALANCE（<b>不退</b>，没扣过）。切平台再生成
+ *             <b>不扣</b>——故失败时也<b>不退</b>（没扣过，退了就是多给额度，见 {@link #failWithoutRefund}）。
  *         <li>（事务外）{@link AiClient#scriptGen}——长 HTTP 调用。
- *         <li>成功：回填 hook/body/cta + 置 draft + 写 card_citation。失败（异常 / blocked / 回填失败）：
- *             占位行 failed + {@link CreditService#refund}(uid,1,"generate",scriptId) + 抛
- *             {@link ErrorCode#AI_FAILED}（异常）/ {@link ErrorCode#CONTENT_BLOCKED}（blocked）。
+ *         <li>成功：回填 hook/body/cta + 置 draft + 写 card_citation，<b>三步包在一个 {@link TransactionTemplate}
+ *             短事务</b>（Finding #2：中途引用插入失败则回填一并回滚，script 停在 generating，再由失败路径
+ *             generating→failed 干净翻转，无孤儿引用；scriptGen HTTP 调用<b>不在</b>此事务内）。失败（异常 /
+ *             blocked / 回填+引用块失败）：占位行 failed + （首生成）{@link CreditService#refund} +
+ *             抛 {@link ErrorCode#AI_FAILED}（异常）/ {@link ErrorCode#CONTENT_BLOCKED}（blocked）。
  *             退款靠 {@code (biz_id, biz_type, type)} 唯一约束幂等，双退安全 no-op。
  *       </ol>
  * </ol>
@@ -61,6 +70,7 @@ public class ScriptService {
     private final AiClient aiClient;
     private final TopicService topicService;
     private final AppUserMapper appUserMapper;
+    private final TransactionTemplate transactionTemplate;
 
     public ScriptService(
             ScriptMapper scriptMapper,
@@ -68,19 +78,31 @@ public class ScriptService {
             CreditService creditService,
             AiClient aiClient,
             TopicService topicService,
-            AppUserMapper appUserMapper) {
+            AppUserMapper appUserMapper,
+            PlatformTransactionManager transactionManager) {
         this.scriptMapper = scriptMapper;
         this.cardCitationMapper = cardCitationMapper;
         this.creditService = creditService;
         this.aiClient = aiClient;
         this.topicService = topicService;
         this.appUserMapper = appUserMapper;
+        // 用于把回填 UPDATE + 引用 INSERT 包成一个短事务（Finding #2）——scriptGen HTTP 调用仍在事务外。
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     /**
      * 文案生成编排（§4.1 事务链）。
      *
      * <p><b>不加 {@code @Transactional}</b>——见类注释。返回已成功稿（含本次生成）的 scriptId。
+     *
+     * <p>三条路径：
+     * <ol>
+     *   <li><b>同平台免扣短路</b>：同选题同平台已有成功稿 → 返回其 id，不扣不调。
+     *   <li><b>切平台再生成（免费）</b>（design §3 line 121-122）：同选题已在任意平台成功过但本平台无成功稿 →
+     *       插占位行 → 调 scriptGen（事务外）→ 成功回填+引用（单事务）；失败置 failed 但<b>不退</b>（未扣过）。
+     *   <li><b>首生成（扣费）</b>：选题从未成功过 → 插占位行 → 扣费 → 调 scriptGen → 成功回填+引用；
+     *       失败置 failed + 退款。
+     * </ol>
      *
      * @param userId  当前用户（来自 JWT）
      * @param topicId 选题 id（必须属于本用户）
@@ -93,13 +115,17 @@ public class ScriptService {
         // 选题归属校验（跨用户选题 → PARAM_INVALID），同时供 scriptGen 请求拿 title/rationale
         Topic topic = topicService.get(userId, topicId);
 
-        // 2. 同选题免扣（§4.2）：已有非 generating/failed 成功稿 → 直接返回其 id
-        Long existingId = scriptMapper.findSuccessfulId(userId, topicId);
-        if (existingId != null) {
-            return existingId;
+        // 2. 同平台免扣短路（§4.2）：同选题同平台已有成功稿 → 返回其 id，不扣不调
+        Long samePlatformId = scriptMapper.findSuccessfulId(userId, topicId, plat);
+        if (samePlatformId != null) {
+            return samePlatformId;
         }
 
-        // 3. 插占位行（review_state='generating'）拿稳定 scriptId 作退款幂等键
+        // 3. 切平台再生成判定（design §3 line 121-122）：同选题已在任意平台成功过 → 免费再生成（不扣额度）
+        boolean regen = scriptMapper.findSuccessfulIdAnyPlatform(userId, topicId) != null;
+
+        // 4. 插占位行（review_state='generating'）拿稳定 scriptId——首生成作退款幂等键，
+        //    再生成虽不扣费但 scriptId 仍供引用溯源与失败行可追溯。自动提交，无环绕事务。
         Script placeholder = new Script();
         placeholder.setUserId(userId);
         placeholder.setTopicId(topicId);
@@ -107,20 +133,18 @@ public class ScriptService {
         scriptMapper.insertPlaceholder(placeholder);
         long scriptId = placeholder.getId();
 
-        // 4. 扣费（独立短事务提交）。余额不足 → failed + 抛 INSUFFICIENT_BALANCE（不退，没扣过）
-        try {
-            creditService.deduct(userId, 1, "generate", String.valueOf(scriptId));
-        } catch (BizException e) {
-            if (e.errorCode() == ErrorCode.INSUFFICIENT_BALANCE) {
+        // 5. 仅首生成扣费（独立短事务提交）。切平台再生成不扣——失败时也就不退（没扣过，退了是多给额度）。
+        //    余额不足 → failed + 抛 INSUFFICIENT_BALANCE（不退，没扣过）。
+        if (!regen) {
+            try {
+                creditService.deduct(userId, 1, "generate", String.valueOf(scriptId));
+            } catch (BizException e) {
                 scriptMapper.markFailed(scriptId);
                 throw e;
             }
-            // 其它 BizException 不应发生，但稳妥起见同样 failed + 重抛
-            scriptMapper.markFailed(scriptId);
-            throw e;
         }
 
-        // 5. 事务外调 Python（30-60s）。成功回填；失败 failed + refund + 抛
+        // 6. 事务外调 Python（30-60s）。成功回填+引用；失败置 failed +（首生成）退款 + 抛
         AiClient.ScriptGenRequest req =
                 new AiClient.ScriptGenRequest(
                         userId,
@@ -132,39 +156,76 @@ public class ScriptService {
             result = aiClient.scriptGen(req);
         } catch (RuntimeException e) {
             // 超时 / 连接中断 / 非 2xx（已由 AiClient 翻译为 BizException(AI_FAILED)） / 解析失败
-            failAndRefund(userId, scriptId);
+            failScript(userId, scriptId, regen);
             throw e instanceof BizException be ? be : new BizException(ErrorCode.AI_FAILED);
         }
 
-        // blocked → failed + refund + CONTENT_BLOCKED
+        // blocked → failed +（首生成）退款 + CONTENT_BLOCKED
         if (result.blocked()) {
-            failAndRefund(userId, scriptId);
+            failScript(userId, scriptId, regen);
             throw new BizException(ErrorCode.CONTENT_BLOCKED);
         }
 
-        // 成功 → 回填 hook/body/cta + draft + 写 card_citation。回填失败 → 视作失败退款
+        // 7. 成功 → 回填 hook/body/cta + draft + 写 card_citation，三步包在一个短事务（Finding #2）。
+        //    块内抛异常 → 整块回滚（script 停在 generating）→ 走失败路径 generating→failed 干净翻转，无孤儿引用。
         try {
-            String hookJson = result.hook() == null ? null : result.hook().toString();
-            String bodyJson = result.body() == null ? null : result.body().toString();
-            String ctaJson = result.cta() == null ? null : result.cta().toString();
-            scriptMapper.backfill(scriptId, hookJson, bodyJson, ctaJson);
-            if (result.citedCardIds() != null) {
-                for (Long cardId : result.citedCardIds()) {
-                    cardCitationMapper.insert(new CardCitation(scriptId, cardId));
-                }
-            }
+            backfillAndCite(scriptId, result);
         } catch (RuntimeException e) {
-            failAndRefund(userId, scriptId);
+            failScript(userId, scriptId, regen);
             throw new BizException(ErrorCode.AI_FAILED);
         }
 
         return scriptId;
     }
 
-    /** 占位行置 failed + 退款（幂等，双退安全）。 */
+    /**
+     * 回填（UPDATE script → draft + hook/body/cta JSONB）+ 引用插入循环，包在<b>一个</b> {@link TransactionTemplate}
+     * 短事务里（Finding #2）。scriptGen HTTP 调用<b>不在此事务内</b>——本方法仅在 HTTP 成功后落库。
+     *
+     * <p>若中途引用插入失败，整块回滚：script 停在 generating，引用全无；调用方 {@link #generate}
+     * 的 catch 再走失败路径把 generating→failed 干净翻转。避免了「script 已 draft（提交）+ 部分引用
+     * （提交）+ failed→退款」的半状态与孤儿引用。适用于首生成与切平台再生成两条成功路径。
+     */
+    private void backfillAndCite(long scriptId, AiClient.ScriptGenResult result) {
+        String hookJson = result.hook() == null ? null : result.hook().toString();
+        String bodyJson = result.body() == null ? null : result.body().toString();
+        String ctaJson = result.cta() == null ? null : result.cta().toString();
+        List<Long> citedCardIds = result.citedCardIds();
+        transactionTemplate.executeWithoutResult(
+                status -> {
+                    scriptMapper.backfill(scriptId, hookJson, bodyJson, ctaJson);
+                    if (citedCardIds != null) {
+                        for (Long cardId : citedCardIds) {
+                            cardCitationMapper.insert(new CardCitation(scriptId, cardId));
+                        }
+                    }
+                });
+    }
+
+    /** 失败调度：首生成（{@code regen=false}）→ 置 failed + 退款（幂等，双退安全）；切平台再生成 → 仅置 failed（未扣不退）。 */
+    private void failScript(long userId, long scriptId, boolean regen) {
+        if (regen) {
+            failWithoutRefund(scriptId);
+        } else {
+            failAndRefund(userId, scriptId);
+        }
+    }
+
+    /** 占位行置 failed + 退款（幂等，双退安全）——首生成失败路径用（扣过必退）。 */
     private void failAndRefund(long userId, long scriptId) {
         scriptMapper.markFailed(scriptId);
         creditService.refund(userId, 1, "generate", String.valueOf(scriptId));
+    }
+
+    /**
+     * 占位行置 failed，<b>不退款</b>——切平台再生成失败路径用。
+     *
+     * <p>切平台再生成未扣过额度（选题已成功过 → 再生成免费），故失败时不退——退了就是多给额度。
+     * 这是与首生成失败路径（{@link #failAndRefund} 退款）的关键区别：首生成「扣过必退」，
+     * 再生成「没扣不退」。
+     */
+    private void failWithoutRefund(long scriptId) {
+        scriptMapper.markFailed(scriptId);
     }
 
     private String resolvePlatform(long userId, String platform) {
@@ -183,8 +244,11 @@ public class ScriptService {
     /**
      * 取稿件（含 hook/body/cta）。无 IDOR 校验——供调用方已确权的内部路径与测试
      * （{@code scriptService.get(sid).bodySentence(0)}）。公网入口走 {@link #getOwned}。
+     *
+     * <p><b>包级可见</b>——仅同包测试用，无 controller 调用（controller 走 IDOR-safe 的 {@link #getOwned}）。
+     * 包级可见使「公网入口必走 {@code getOwned}」成为结构约束，而非仅靠约定。
      */
-    public Script get(long scriptId) {
+    Script get(long scriptId) {
         Script s = scriptMapper.selectById(scriptId);
         if (s == null) {
             throw new BizException(ErrorCode.PARAM_INVALID, "稿件不存在");

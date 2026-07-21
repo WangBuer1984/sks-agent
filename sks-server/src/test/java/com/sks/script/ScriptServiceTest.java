@@ -125,15 +125,17 @@ class ScriptServiceTest extends AbstractDbTest {
                         uid));
     }
 
-    /** §4.2：同选题已有成功稿（非 generating/failed）→ 免扣，返回已有 id。 */
+    /** §4.2：同选题同平台已有成功稿（非 generating/failed）→ 免扣，返回已有 id，scriptGen 只调一次。 */
     @Test
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     void regenerateSameTopicNotCharged() {
         creditService.credit(uid, 5, "recharge", "o1", null);
         when(aiClient.scriptGen(any())).thenReturn(okScriptResult());
-        scriptService.generate(uid, topicId, "douyin"); // 扣 1
-        scriptService.generate(uid, topicId, "douyin"); // 同选题免扣
-        assertEquals(4, creditService.balance(uid));
+        long sid1 = scriptService.generate(uid, topicId, "douyin"); // 扣 1
+        long sid2 = scriptService.generate(uid, topicId, "douyin"); // 同平台同选题免扣、不重调
+        assertEquals(sid1, sid2); // 返回已有稿 id，不新建
+        assertEquals(4, creditService.balance(uid)); // 未再扣
+        verify(aiClient, times(1)).scriptGen(any()); // 同平台短路，只生成一次
     }
 
     /** 单句 AI 重写不扣额度、预览不落库（确认才写）。 */
@@ -185,17 +187,58 @@ class ScriptServiceTest extends AbstractDbTest {
         assertEquals(5, creditService.balance(uid)); // 已退款
     }
 
-    /** §4.2「三平台版本按需生成…同选题不加扣」：切平台再生成同选题→返回已有稿 id、不扣、不重调 Python。 */
+    /**
+     * §4.2「三平台版本按需生成…同选题不加扣」（design §3 line 121-122）：切平台再生成同选题→
+     * <b>新建</b>新平台稿件、不扣额度、scriptGen 重调一次（省约 2/3 token 的前提是再生成本就发生）。
+     *
+     * <p>与 {@link #regenerateSameTopicNotCharged} 对照：同平台短路（sid1==sid2、scriptGen×1），
+     * 跨平台再生（sid1!=sid2、scriptGen×2、余额不变）。
+     */
     @Test
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     void sameTopicNotChargedAcrossPlatforms() {
         creditService.credit(uid, 5, "recharge", "o1", null);
         when(aiClient.scriptGen(any())).thenReturn(okScriptResult());
-        long sid1 = scriptService.generate(uid, topicId, "douyin"); // 扣 1 → 4
-        long sid2 = scriptService.generate(uid, topicId, "kuaishou"); // 同选题免扣（跨平台）
-        assertEquals(sid1, sid2); // 返回已有稿 id，不新建
-        assertEquals(4, creditService.balance(uid)); // 未再扣
-        verify(aiClient, times(1)).scriptGen(any()); // 只生成一次
+        long sid1 = scriptService.generate(uid, topicId, "douyin"); // 首生成扣 1 → 4
+        long sid2 = scriptService.generate(uid, topicId, "kuaishou"); // 切平台再生成，免扣
+        assertNotEquals(sid1, sid2); // 新建稿件，非返回旧平台稿
+        assertEquals(4, creditService.balance(uid)); // 选题已成功过 → 再生成免费，余额不动
+        verify(aiClient, times(2)).scriptGen(any()); // 两次生成都调 Python（再生成本就发生）
+    }
+
+    /**
+     * §4.1 切平台再生成失败路径：选题已成功过（任意平台）→ 再生成<b>不扣</b>；失败时<b>不退</b>
+     * （没扣过，退了就是多给额度），仅占位行置 failed + 抛 AI_FAILED。与 {@link #generationFailureRefundsCredit}
+     * （首生成失败必退）形成对照——证伪「再生成失败也退」的回归。
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void crossPlatformRegenFailureNoRefund() {
+        creditService.credit(uid, 5, "recharge", "o1", null);
+        // 首次 douyin 生成成功（扣 1 → 4），第二次 kuaishou 再生成超时
+        when(aiClient.scriptGen(any()))
+                .thenReturn(okScriptResult())
+                .thenThrow(new RuntimeException("timeout"));
+        scriptService.generate(uid, topicId, "douyin");
+        BizException e =
+                assertThrows(
+                        BizException.class, () -> scriptService.generate(uid, topicId, "kuaishou"));
+        assertEquals(ErrorCode.AI_FAILED, e.errorCode());
+        assertEquals(4, creditService.balance(uid)); // 未扣不退——余额停在 4
+        // 再生成的占位行已持久化为 failed（首生成那行是 draft，故 failed 计数恰为 1）
+        assertEquals(
+                1,
+                jdbcTemplate.queryForObject(
+                        "SELECT COUNT(*) FROM script WHERE user_id = ? AND review_state = 'failed'",
+                        Integer.class,
+                        uid));
+        // 承重断言：切平台再生成失败<b>不写退款流水</b>（没扣过）。若误走 failAndRefund，此处会变 1 → 红。
+        assertEquals(
+                0,
+                jdbcTemplate.queryForObject(
+                        "SELECT COUNT(*) FROM credit_ledger WHERE user_id = ? AND biz_type = 'generate' AND type = 'refund'",
+                        Integer.class,
+                        uid));
     }
 
     /** platform 缺省 → 取 app_user.default_platform（douyin）。 */

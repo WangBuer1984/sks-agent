@@ -46,14 +46,25 @@ public interface ScriptMapper extends BaseMapper<Script> {
     int markFailed(@Param("id") long id);
 
     /**
-     * 同选题是否已有成功稿（§4.2 免扣）：{@code review_state NOT IN ('generating','failed')}。
-     * 不限 platform——切平台再生成同选题亦免扣（design §3 按需生成；cross-task decision 简化为返回已有 id）。
-     * 无则返回 null。
+     * 同选题同平台是否已有成功稿（§4.2 免扣）：{@code review_state NOT IN ('generating','failed') AND platform=?}。
+     * 命中 → 返回已有 id，免扣免调（同平台短路）。无则返回 null（交由调用方判断是否走切平台再生成路径）。
+     */
+    @Select(
+            "SELECT id FROM script WHERE user_id = #{userId} AND topic_id = #{topicId} "
+                    + "AND review_state NOT IN ('generating','failed') AND platform = #{platform} "
+                    + "ORDER BY id DESC LIMIT 1")
+    Long findSuccessfulId(
+            @Param("userId") long userId, @Param("topicId") long topicId, @Param("platform") String platform);
+
+    /**
+     * 同选题是否已<b>在任意平台</b>成功过（design §3 line 121-122「切平台再生成、同选题不加扣」）：
+     * 命中 → 本次为切平台再生成，免扣（选题已成功过，再生成免费；省约 2/3 token 的前提是再生成本就发生）。
+     * 仅作存在性判定；具体同平台短路走 {@link #findSuccessfulId} 三参重载。
      */
     @Select(
             "SELECT id FROM script WHERE user_id = #{userId} AND topic_id = #{topicId} "
                     + "AND review_state NOT IN ('generating','failed') ORDER BY id DESC LIMIT 1")
-    Long findSuccessfulId(@Param("userId") long userId, @Param("topicId") long topicId);
+    Long findSuccessfulIdAnyPlatform(@Param("userId") long userId, @Param("topicId") long topicId);
 
     /**
      * 取稿件（含 hook/body/cta JSONB 文本）。带 user_id 过滤（IDOR 防护，§5.1）——跨用户返回 null。
