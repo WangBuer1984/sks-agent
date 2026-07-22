@@ -40,9 +40,19 @@ sks:
   # 本地 dev 可用 http://localhost:8000；service-token 来自 .env SERVICE_TOKEN（Python verify_service_token 校验同值）。
   ai:
     base-url: ${SKS_AI_BASE_URL:http://sks-ai:8000}
+    # §5.3 全链路超时「内层短于外层」：Python LLM 单 120s × 最多 2 ≈ 250s
+    # → Java read-timeout 270s → nginx 300s。内层不可长于外层，否则外层先掐断仍在跑的调用。
+    connect-timeout-seconds: ${SKS_AI_CONNECT_TIMEOUT:10}
+    read-timeout-seconds: ${SKS_AI_READ_TIMEOUT:270}
   service-token: ${SERVICE_TOKEN:}
   # 复盘双阈值带状区间（§4.4）：play >= avg×hot-threshold → hot；play < avg×flop-threshold → flop；之间 → plain。
   # ReviewService 读后传入纯函数 ReviewStateMachine.classify（不在此读，保持纯函数可单测）。
   review:
     hot-threshold: ${SKS_REVIEW_HOT_THRESHOLD:3.0}
     flop-threshold: ${SKS_REVIEW_FLOP_THRESHOLD:0.5}
+  # 余额监控（P5 Task 5.1 QuotaWatchJob）——阈值严格 <（at-threshold 不告警）。
+  # admin-phone 来自 .env SKS_QUOTA_ADMIN_PHONE；余额查询 API + 告警 SMS 通道为联调项（留桩）。
+  quota:
+    sms-threshold: ${SKS_QUOTA_SMS_THRESHOLD:100}
+    glm-threshold: ${SKS_QUOTA_GLM_THRESHOLD:20}
+    admin-phone: ${SKS_QUOTA_ADMIN_PHONE:}

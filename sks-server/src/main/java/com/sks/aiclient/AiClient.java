@@ -37,8 +37,12 @@ import org.springframework.web.client.RestClientResponseException;
  *       {@link ErrorCode#AI_FAILED}。每请求都带，业务代码不感知。
  *   <li><b>X-Request-Id</b>：Java 生成的 UUID，Python 仅记录用于串联日志（不校验）。同时写入 MDC
  *       {@code reqId}，让本次调用的所有日志可按 reqId 检索。finally 块清理 MDC，避免线程池复用串味。
- *   <li><b>超时</b>：connect 10s / read 60s。embed / safety 很快，但后续 script_gen（30-60s）/ analyze
- *       可能慢——设一个宽松的读超时，后续 skill 不再各设一遍。
+ *   <li><b>超时</b>：connect 10s / read <b>270s</b>（P5 Task 5.1 §5.3 全链路超时对齐——
+ *       Python 内 LLM 单次 120s × 最多 2（原始+1 重试）≈ 250s → Java→Python read 270s → nginx 300s，
+ *       「内层短于外层」，外层不可先掐断仍在跑的 Python 调用）。可配置：
+ *       {@code sks.ai.connect-timeout-seconds} / {@code sks.ai.read-timeout-seconds}。
+ *       原 60s 读超时会让长 script_gen（retrieve→generate→safety→rewrite-once 可超 60s）误判 AI_FAILED
+ *       并退款——虽退款不丢钱，但 Python 工作白费、用户需重试。
  *   <li><b>重试</b>：仅对 {@link ResourceAccessException}（连接被重置 / 网络抖动）重试一次，简单 YAGNI。
  *   <li><b>错误码翻译</b>：Python 非 2xx（含 403 / 422 / 5xx）→ {@link BizException}(AI_FAILED)，
  *       日志记录 status + body 便于排查。
@@ -56,12 +60,20 @@ public class AiClient {
     private final RestClient restClient;
     private final String serviceToken;
 
+    /**
+     * 构造（P5 Task 5.1 §5.3 全链路超时对齐——超时改为可配置，默认值见参数注解）。
+     *
+     * @param connectTimeoutSeconds 连接超时（默认 10s；embed/safety 等短调用用）
+     * @param readTimeoutSeconds    读超时（默认 <b>270s</b>——见类注释 §5.3 链路推导）
+     */
     public AiClient(
             @Value("${sks.ai.base-url:http://sks-ai:8000}") String baseUrl,
-            @Value("${sks.service-token:}") String serviceToken) {
+            @Value("${sks.service-token:}") String serviceToken,
+            @Value("${sks.ai.connect-timeout-seconds:10}") int connectTimeoutSeconds,
+            @Value("${sks.ai.read-timeout-seconds:270}") int readTimeoutSeconds) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout((int) Duration.ofSeconds(10).toMillis());
-        factory.setReadTimeout((int) Duration.ofSeconds(60).toMillis());
+        factory.setConnectTimeout((int) Duration.ofSeconds(connectTimeoutSeconds).toMillis());
+        factory.setReadTimeout((int) Duration.ofSeconds(readTimeoutSeconds).toMillis());
         this.restClient =
                 RestClient.builder().baseUrl(baseUrl).requestFactory(factory).build();
         this.serviceToken = serviceToken;
