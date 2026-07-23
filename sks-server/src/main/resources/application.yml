@@ -20,6 +20,17 @@ spring:
     locations: classpath:db/migration
     baseline-on-migrate: true
 
+  # 邮件告警通道（MailAlertNotifier）：host 空 → Spring Boot MailSender 自动配置不生效 →
+  # 无 JavaMailSender bean → MailAlertNotifier stub（log + no-op，不抛）。详见 spec §3.4。
+  # 465 = SMTPS，必须显式开 ssl.enable=true（默认明文会挂起/隐晦失败）；若改 587 用 starttls.enable 并去掉 ssl.enable。
+  mail:
+    host: ${SPRING_MAIL_HOST:}
+    port: ${SPRING_MAIL_PORT:465}
+    username: ${SPRING_MAIL_USERNAME:}
+    password: ${SPRING_MAIL_PASSWORD:}
+    properties:
+      mail.smtp.ssl.enable: true
+
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
@@ -66,3 +77,7 @@ sks:
     sign-name: ${ALIYUN_SMS_SIGN:}
     verify-template-code: ${ALIYUN_SMS_VERIFY_TEMPLATE:}
     alert-template-code: ${ALIYUN_SMS_ALERT_TEMPLATE:}
+  # 邮件告警收件人（MailAlertNotifier）。空 → stub 不发；非空 + spring.mail.host 非空 → 真发邮件。
+  # 值来自 .env SKS_ALERT_ADMIN_EMAIL（站长邮箱）。
+  alert:
+    admin-email: ${SKS_ALERT_ADMIN_EMAIL:}

@@ -41,6 +41,11 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 | `ALIYUN_ACCESS_KEY_ID` | ❌ 空 | **联调必填**：阿里云主账号 AK。空则内容安全 fail-closed（**所有 UGC 被拦**）+ ASR + 余额查询 |
 | `ALIYUN_ACCESS_KEY_SECRET` | ❌ 空 | **联调必填**：阿里云 SK |
 | `ALIYUN_SMS_SIGN` | ❌ 空 | **联调必填**：短信签名（验证码 + QuotaWatch 告警） |
+| `SPRING_MAIL_HOST` | ❌ 空 | **联调必填**：SMTP 主机（告警邮件通道） |
+| `SPRING_MAIL_PORT` | 465 | SMTPS 端口（465 需 ssl.enable=true，已配） |
+| `SPRING_MAIL_USERNAME` | ❌ 空 | **联调必填**：SMTP 账号 |
+| `SPRING_MAIL_PASSWORD` | ❌ 空 | **联调必填**：SMTP 授权码（密钥，入 .env） |
+| `SKS_ALERT_ADMIN_EMAIL` | ❌ 空 | **联调必填**：站长告警收件邮箱 |
 
 ### `.env` 缺失项（需新增行）
 
