@@ -117,15 +117,24 @@ class UserPhoneServiceTest extends AbstractDbTest {
     @Test
     void crossSceneCodeRejected() {
         long uid = register("13900000026");
-        // 发登录码（LOGIN_REGISTER），拿该码 verify-old 应失败（scene 过滤）
-        // 直接插一条 LOGIN_REGISTER 码
+        // 手动建 AWAITING_OLD_VERIFY session，让 session 检查放行，走到 findActiveCode
+        PhoneChangeSession s = new PhoneChangeSession();
+        s.setToken(java.util.UUID.randomUUID().toString().replace("-", ""));
+        s.setUserId(uid);
+        s.setOldPhone("13900000026");
+        s.setStatus("AWAITING_OLD_VERIFY");
+        s.setExpiresAt(OffsetDateTime.now().plusMinutes(10));
+        sessionMapper.insert(s);
+        // 只存在 LOGIN_REGISTER 码 —— scene 过滤必须排除它
         SmsCode login = new SmsCode();
         login.setPhone("13900000026");
         login.setCode("999999");
         login.setExpireAt(OffsetDateTime.now().plusMinutes(5));
         login.setScene("LOGIN_REGISTER");
         smsCodeMapper.insert(login);
-        assertThrows(BizException.class, () -> userPhoneService.verifyOldPhone(uid, "999999"));
+        BizException e = assertThrows(BizException.class,
+                () -> userPhoneService.verifyOldPhone(uid, "999999"));
+        assertEquals(ErrorCode.SMS_CODE_INVALID, e.errorCode());
     }
 
     private String findToken(long userId) {
