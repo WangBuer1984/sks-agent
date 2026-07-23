@@ -33,6 +33,22 @@ public class UserPhoneController {
         return ApiResponse.ok(new TokenResponse(token));
     }
 
+    @PostMapping("/send-new-code")
+    public ApiResponse<Void> sendNewCode(@AuthenticationPrincipal Long userId,
+                                         @Valid @RequestBody NewPhoneRequest req) {
+        userPhoneService.sendNewPhoneCode(userId, req.newPhone(), req.token());
+        return ApiResponse.ok(null);
+    }
+
+    @PostMapping("/verify-new")
+    public ApiResponse<Void> verifyNew(@AuthenticationPrincipal Long userId,
+                                        @Valid @RequestBody VerifyNewRequest req) {
+        userPhoneService.verifyNewPhone(userId, req.newPhone(), req.code(), req.token());
+        return ApiResponse.ok(null);
+    }
+
     public record VerifyCodeRequest(@NotBlank String code) {}
     public record TokenResponse(String token) {}
+    public record NewPhoneRequest(@NotBlank String newPhone, @NotBlank String token) {}
+    public record VerifyNewRequest(@NotBlank String newPhone, @NotBlank String code, @NotBlank String token) {}
 }

@@ -137,6 +137,94 @@ class UserPhoneServiceTest extends AbstractDbTest {
         assertEquals(ErrorCode.SMS_CODE_INVALID, e.errorCode());
     }
 
+    // --- Task 7: step3 send-new-code / step4 verify-new ---
+
+    @Test
+    void sendNewCodeRequiresValidToken() {
+        long uid = register("13900000030");
+        assertThrows(BizException.class,
+                () -> userPhoneService.sendNewPhoneCode(uid, "13900000099", "bad-token"));
+    }
+
+    @Test
+    void sendNewCodeRejectsSameAsOldPhone() {
+        long uid = register("13900000031");
+        String token = passVerifyOld(uid, "13900000031");
+        BizException e = assertThrows(BizException.class,
+                () -> userPhoneService.sendNewPhoneCode(uid, "13900000031", token));
+        assertEquals(ErrorCode.PARAM_INVALID, e.errorCode());
+    }
+
+    @Test
+    void sendNewCodeRejectsBoundPhone() {
+        register("13900000032"); // 另一用户占了 32
+        long uid = register("13900000033");
+        String token = passVerifyOld(uid, "13900000033");
+        BizException e = assertThrows(BizException.class,
+                () -> userPhoneService.sendNewPhoneCode(uid, "13900000032", token));
+        assertEquals(ErrorCode.PHONE_ALREADY_BOUND, e.errorCode());
+    }
+
+    @Test
+    void sendNewCodeSendsToNewPhone() {
+        long uid = register("13900000034");
+        String token = passVerifyOld(uid, "13900000034");
+        userPhoneService.sendNewPhoneCode(uid, "13900000044", token);
+        verify(smsClient).sendVerificationCode(eq("13900000044"),
+                eq(realCodeOf("13900000044", "BIND_NEW_PHONE")), eq(SmsScene.BIND_NEW_PHONE));
+    }
+
+    @Test
+    void verifyNewRejectsMismatchedNewPhone() {
+        long uid = register("13900000035");
+        String token = passVerifyOld(uid, "13900000035");
+        userPhoneService.sendNewPhoneCode(uid, "13900000045", token);
+        // verify-new 传 B 号（与 session.new_phone=45 不符）
+        BizException e = assertThrows(BizException.class,
+                () -> userPhoneService.verifyNewPhone(uid, "13900000099", "000000", token));
+        assertEquals(ErrorCode.PHONE_CHANGE_TOKEN_INVALID, e.errorCode());
+    }
+
+    @Test
+    void verifyNewRightCodeUpdatesPhoneAndInvalidatesCodes() {
+        long uid = register("13900000036");
+        String token = passVerifyOld(uid, "13900000036");
+        userPhoneService.sendNewPhoneCode(uid, "13900000046", token);
+        String code = realCodeOf("13900000046", "BIND_NEW_PHONE");
+        userPhoneService.verifyNewPhone(uid, "13900000046", code, token);
+        // app_user.phone 更新
+        assertEquals("13900000046", appUserMapper.selectById(uid).getPhone());
+        // token 消费：同 token 再 verify-new 拒
+        assertThrows(BizException.class,
+                () -> userPhoneService.verifyNewPhone(uid, "13900000046", code, token));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void verifyNewConcurrentBoundThrowsPhoneAlreadyBound() {
+        long uid = register("13900000037");
+        String token = passVerifyOld(uid, "13900000037");
+        userPhoneService.sendNewPhoneCode(uid, "13900000047", token);
+        // 预占 47（另一用户）→ verify-new UPDATE app_user.phone 撞 UNIQUE
+        register("13900000047");
+        String code = realCodeOf("13900000047", "BIND_NEW_PHONE");
+        // 注：本号已发码给 47（同号），47 也在另一用户名下 —— UNIQUE 兜底
+        // NOT_SUPPORTED：completePhoneChange 起自己的 tx，DuplicateKey 透传到非事务 verifyNewPhone
+        // → catch → PHONE_ALREADY_BOUND（spec §6 事务外 catch 模式）
+        BizException e = assertThrows(BizException.class,
+                () -> userPhoneService.verifyNewPhone(uid, "13900000047", code, token));
+        assertEquals(ErrorCode.PHONE_ALREADY_BOUND, e.errorCode());
+    }
+
+    /** 辅助：完成 verify-old 拿 token。 */
+    private String passVerifyOld(long uid, String oldPhone) {
+        userPhoneService.sendOldPhoneCode(uid);
+        // 回拨 created_at 绕频控（send-new 不再发旧号码，但 send-old 已发一次）
+        jdbc.update("UPDATE sms_code SET created_at = now() - interval '2 min' WHERE phone=?", oldPhone);
+        String code = realCodeOf(oldPhone, "VERIFY_OLD_PHONE");
+        return userPhoneService.verifyOldPhone(uid, code);
+    }
+
     private String findToken(long userId) {
         return jdbc.queryForObject(
                 "SELECT token FROM phone_change_session WHERE user_id=? AND status<>'DONE' ORDER BY id DESC LIMIT 1",
@@ -147,11 +235,21 @@ class UserPhoneServiceTest extends AbstractDbTest {
      * NOT_SUPPORTED 用例不随测试事务回滚，需显式清理已提交的行（镜像 AuthServiceTest.cleanupNonTxLock）。
      * 对回滚型用例（数据已被测试事务回滚）此处为空操作，无副作用。phone_change_session 有 FK 指向
      * app_user、sms_code 无 FK，按依赖序删。
+     *
+     * <p>覆盖两个 NOT_SUPPORTED 用例：verifyOldLockPersistsAcrossTransactions（phone 24）与
+     * verifyNewConcurrentBoundThrowsPhoneAlreadyBound（phone 37/47，含预占的并发占号行）。
      */
     @AfterEach
     void cleanupNonTxLock() {
-        jdbc.update("DELETE FROM phone_change_session WHERE user_id IN (SELECT id FROM app_user WHERE phone = '13900000024')");
-        jdbc.update("DELETE FROM sms_code WHERE phone = '13900000024'");
-        jdbc.update("DELETE FROM app_user WHERE phone = '13900000024'");
+        String[] phones = {"13900000024", "13900000037", "13900000047"};
+        for (String p : phones) {
+            jdbc.update("DELETE FROM phone_change_session WHERE user_id IN (SELECT id FROM app_user WHERE phone = ?)", p);
+        }
+        for (String p : phones) {
+            jdbc.update("DELETE FROM sms_code WHERE phone = ?", p);
+        }
+        for (String p : phones) {
+            jdbc.update("DELETE FROM app_user WHERE phone = ?", p);
+        }
     }
 }
