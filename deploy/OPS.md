@@ -12,7 +12,8 @@
 
 | 项 | 留桩位置 | 联调动作 |
 |----|----------|----------|
-| 阿里云 SMS 发送（验证码 + 告警） | `AuthService.sendCode` `[SMS-STUB]` / `QuotaWatchJob.sendAlert` `[SMS-STUB]` | 已接 `AliyunSmsClient`（dysmsapi SendSms），填 `ALIYUN_SMS_SIGN` + `ALIYUN_SMS_VERIFY_TEMPLATE` + `ALIYUN_SMS_ALERT_TEMPLATE` |
+| 阿里云 SMS 发送（验证码） | `AliyunSmsAuthClient`（DYPNS `SendSmsVerifyCode` 字面码，3 scene：LOGIN_REGISTER/VERIFY_OLD_PHONE/BIND_NEW_PHONE） | 填 `ALIYUN_SMS_SIGN` + `ALIYUN_SMS_TEMPLATE_LOGIN/VERIFY_OLD/BIND_NEW`（赠送签名/模板，空则走 stub 不真发） |
+| 告警邮件 | `QuotaWatchJob.sendAlert` → `AlertNotifier.notify`（`RechargeOrderService` 两处 `[SMS-STUB]` 留 TODO，钱路径，下个 plan） | 填 `SPRING_MAIL_*` + `SKS_ALERT_ADMIN_EMAIL`（465 + SSL，`MailAlertNotifier`） |
 | 阿里云 SMS 余额查询 | `QuotaWatchJob.querySmsBalance` → `Optional.empty()` | 接 BSS OpenAPI（QueryAccountBalance，需 AK 开 BSS 读权限；返回账户余额元，非短信条数）— dysmsapi 无余额查询 API |
 | 智谱账户余额查询 | `QuotaWatchJob.queryGlmBalance` → `Optional.empty()` | 接智谱 BigModel 用户余额查询 API，glm api-key via `.env` |
 | 对象存储上传（OSS/COS） | `pg_backup.sh` `OSS_BUCKET` 未设 → 跳过 | 装 aliyun-oss / coscli，设 `OSS_BUCKET` + 远端 30 天保留 |
@@ -117,7 +118,7 @@ envsubst < deploy/nginx/50x.html > deploy/nginx/50x.html.real && mv deploy/nginx
   `sks.alert.admin-email` + `spring.mail.host`，host 空→stub 不发；configured→真发邮件，失败 `log.warn`
   吞掉不抛，被 `sweep` try/catch 兜底不中断 Job。
 
-阈值 via `application.yml`；告警收件人走 `sks.alert.admin-email`（见 §邮件告警）：
+阈值 via `application.yml`；告警收件人走 `sks.alert.admin-email`（见 `application.yml` `sks.alert.admin-email` / `MailAlertNotifier`）：
 
 ```
 sks.quota.sms-threshold   (默认 100)
@@ -143,7 +144,7 @@ sks.quota.glm-threshold   (默认 20)
 - [ ] `curl -s https://域名/50x.html` 可见兜底页（503/502 触发 `error_page` 重定向）
 - [ ] `bash deploy/backup/pg_backup.sh` 产出 `.sql.gz` 且 `pg_restore_verify.sh` 跑通
 - [ ] 停掉 java 容器后 UptimeRobot 在 5 min 内告警
-- [ ] QuotaWatchJob 手测：把阈值调到极高触发告警日志（联调后改 SMS）
+- [ ] QuotaWatchJob 手测：把阈值调到极高触发告警邮件到站长邮箱（`SKS_ALERT_ADMIN_EMAIL`）
 
 ## 8. 镜像加速器（首次起栈网络前置 — Docker Hub 被墙）
 

@@ -81,7 +81,8 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 - [ ] **GLM 结构化输出**：`script_gen` 的 `{hook,body,cta}` 句结构 schema 被智谱正确返回（json_schema 支持）；`interview` summarize schema、`card_gen` schema 同理
 - [ ] **GLM thinking 转发**：`extra_body.thinking` 经 langchain-openai 透传到智谱（归因/归纳用 thinking-on 档）
 - [ ] **阿里云内容安全签名**：`content_safety` 的 ACS ROA 签名（HMAC）被正确接受（fail-closed 解除，正常 UGC 不再被拦）
-- [ ] **阿里云短信**：`AuthService.sendCode` + `QuotaWatchJob.sendAlert` 两处 stub 替换为真实 dysmsapi（验证码 + 告警短信送达）
+- [ ] **阿里云短信认证（DYPNS）**：`POST /api/auth/send-code` 真收验证码（字面码，`AliyunSmsAuthClient` DYPNS `SendSmsVerifyCode`，填 `ALIYUN_SMS_SIGN` + `ALIYUN_SMS_TEMPLATE_LOGIN/VERIFY_OLD/BIND_NEW`）
+- [ ] **告警邮件（SMTP）**：`SPRING_MAIL_*` + `SKS_ALERT_ADMIN_EMAIL` 配齐，`QuotaWatchJob` 触发告警邮件送达站长邮箱（`MailAlertNotifier`，465 + SSL）
 - [ ] **TikHub 响应契约**：`account_top_videos`/`precheck`/`hot_board` 的字段路径（`aweme_list`/`code==200`/`hot_list`）与防御性解析一致；`api.tikhub.dev` 可达
 - [ ] **TikHub download_url 可达性**：阿里云 filetrans 能否拉取 TikHub 签名直链（反爬风险）；不能则需补 download→OSS→file_link 兜底
 - [ ] **【P2 联调首检】ASR webm 格式**：`_infer_format` 无 `webm` 分支，前端 MediaRecorder 恒发 `audio/webm` 被标 `wav`。核对 paraformer-realtime-v2 是否收 webm/opus；不收则改前端录 pcm/wav 或服务端转码（**第一处会坏的**）
