@@ -56,3 +56,13 @@ sks:
     sms-threshold: ${SKS_QUOTA_SMS_THRESHOLD:100}
     glm-threshold: ${SKS_QUOTA_GLM_THRESHOLD:20}
     admin-phone: ${SKS_QUOTA_ADMIN_PHONE:}
+  # 阿里云短信（§3 联调首检「阿里云短信」——AliyunSmsClient 条件降级：key/template 空→stub 不抛；
+  # 齐全→真 SendSms，失败抛 SMS_SEND_FAILED 5003）。env 来自 .env（gitignored）。
+  # sks-server 用 env_file:.env，所有 ALIYUN_* 已自动进容器，无需改 docker-compose.yml。
+  sms:
+    access-key-id: ${ALIYUN_ACCESS_KEY_ID:}
+    access-key-secret: ${ALIYUN_ACCESS_KEY_SECRET:}
+    endpoint: ${ALIYUN_SMS_ENDPOINT:dysmsapi.aliyuncs.com}
+    sign-name: ${ALIYUN_SMS_SIGN:}
+    verify-template-code: ${ALIYUN_SMS_VERIFY_TEMPLATE:}
+    alert-template-code: ${ALIYUN_SMS_ALERT_TEMPLATE:}

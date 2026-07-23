@@ -54,6 +54,8 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 | `SKS_AI_READ_TIMEOUT` / `SKS_AI_CONNECT_TIMEOUT` | AiClient 超时（§5.3 链） | 默认 270 / 10 秒（**勿低于 270，否则 §5.3 链断裂**） |
 | `sks.review.hot-threshold` / `flop-threshold` | 复盘判态阈值 | 默认 3.0 / 0.5（近 30 天均值 × 阈值） |
 | `sks.quota.sms-threshold` / `glm-threshold` | 余额告警阈值 | 默认 100 条 / ¥20 |
+| `ALIYUN_SMS_VERIFY_TEMPLATE` | 验证码模板（含 `${code}` 变量，审批通过） | 联调必填：空则 sendCode 走 stub 不真发 |
+| `ALIYUN_SMS_ALERT_TEMPLATE` | 告警模板（含 `${reason}` 变量） | 联调必填：空则 sendAlert 走 stub |
 
 ---
 

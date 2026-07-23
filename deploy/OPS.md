@@ -12,7 +12,7 @@
 
 | 项 | 留桩位置 | 联调动作 |
 |----|----------|----------|
-| 阿里云 SMS 发送（验证码 + 告警） | `AuthService.sendCode` `[SMS-STUB]` / `QuotaWatchJob.sendAlert` `[SMS-STUB]` | 替换为阿里云 Dysmsapi，access-key via `.env`；二者统一 seam |
+| 阿里云 SMS 发送（验证码 + 告警） | `AuthService.sendCode` `[SMS-STUB]` / `QuotaWatchJob.sendAlert` `[SMS-STUB]` | 已接 `AliyunSmsClient`（dysmsapi SendSms），填 `ALIYUN_SMS_SIGN` + `ALIYUN_SMS_VERIFY_TEMPLATE` + `ALIYUN_SMS_ALERT_TEMPLATE` |
 | 阿里云 SMS 余额查询 | `QuotaWatchJob.querySmsBalance` → `Optional.empty()` | 接 Dysmsapi 账户余额查询 API |
 | 智谱账户余额查询 | `QuotaWatchJob.queryGlmBalance` → `Optional.empty()` | 接智谱 BigModel 用户余额查询 API，glm api-key via `.env` |
 | 对象存储上传（OSS/COS） | `pg_backup.sh` `OSS_BUCKET` 未设 → 跳过 | 装 aliyun-oss / coscli，设 `OSS_BUCKET` + 远端 30 天保留 |
