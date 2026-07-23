@@ -3,6 +3,10 @@
 > 对应设计文档 §5.3。本文记录<b>外部/控制台/宿主</b>侧的运维项——它们不是代码，
 > 无法单元测试，上线前由人按清单执行。代码侧产物见同目录 `nginx/`、`backup/` 与
 > `sks-server/src/main/java/com/sks/common/QuotaWatchJob.java`。
+>
+> <b>首次起栈前置</b>：若 `docker compose up -d --build` 卡在拉 Docker Hub 基础镜像
+> （`registry-1.docker.io` 被墙，报 `Connection reset by peer` / `failed to resolve source metadata`），
+> 先按 §8 配镜像加速器，再回来跑其余项。
 
 ## 0. 联调-gated 项总览（代码留桩，上线/联调时接线）
 
@@ -139,3 +143,54 @@ sks.quota.admin-phone     (from .env SKS_QUOTA_ADMIN_PHONE)
 - [ ] `bash deploy/backup/pg_backup.sh` 产出 `.sql.gz` 且 `pg_restore_verify.sh` 跑通
 - [ ] 停掉 java 容器后 UptimeRobot 在 5 min 内告警
 - [ ] QuotaWatchJob 手测：把阈值调到极高触发告警日志（联调后改 SMS）
+
+## 8. 镜像加速器（首次起栈网络前置 — Docker Hub 被墙）
+
+`docker compose --env-file .env up -d --build` 首次要拉三个 Docker Hub 基础镜像：
+`node:22-alpine`（前端构建）、`python:3.12-slim`（sks-ai）、`eclipse-temurin:21-jre/jdk`（sks-server）。
+在无法直连 `registry-1.docker.io` 的网络（典型：中国大陆，`curl https://registry-1.docker.io/v2/`
+报 `Connection reset by peer`）下，构建会卡在 `failed to resolve source metadata`。
+
+诊断 + 配阿里云加速器（每账号唯一地址，<b>本文档只记 key 名/步骤，不含地址值</b>）：
+
+```bash
+# 1) 确认是否被墙（reset by peer = 被墙）
+curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://registry-1.docker.io/v2/ || echo "unreachable"
+
+# 2) 去阿里云控制台开「容器镜像服务 → 镜像工具 → 镜像加速器」，复制专属地址
+#    形如 https://<your-id>.mirror.aliyuncs.com
+```
+
+<b>关键：先搞清本机 Docker 引擎是谁</b>（`docker context ls`）—— 不同引擎配
+`registry-mirrors` 的位置不同，配错位置不报错但不生效：
+
+| 引擎 | 配置位置 | 生效方式 |
+|------|----------|----------|
+| colima（macOS 常见，context 显示 `colima *`） | `~/.colima/default/colima.yaml` 的 `docker:` 段加 `registry-mirrors:` | `colima restart`（colima 自动合并 exec-opts/features + mirror 进 VM 内 `/etc/docker/daemon.json`） |
+| Docker Desktop（GUI） | Docker Desktop → Settings → Docker Engine 加 `registry-mirrors` | Apply & Restart |
+| 原生 dockerd（Linux） | `/etc/docker/daemon.json` 加 `registry-mirrors` | `sudo systemctl restart docker` |
+
+colima 配置示例（`~/.colima/default/colima.yaml`，`docker:` 段「maps directly to daemon.json」）：
+
+```yaml
+docker:
+  registry-mirrors:
+    - https://<your-id>.mirror.aliyuncs.com
+```
+
+验证生效（`docker info` 应列出 Registry Mirrors）：
+
+```bash
+colima restart
+docker info | grep -iA3 'registry mirrors'
+# 期望：
+#  Registry Mirrors:
+#   https://<your-id>.mirror.aliyuncs.com/
+```
+
+生效后重新构建：`docker compose --env-file .env up -d --build`。
+
+> <b>踩坑</b>：colima 的 dockerd 跑在 Linux VM 里，读 VM 内 `/etc/docker/daemon.json`，
+> <b>不读</b>宿主 `~/.docker/daemon.json`。把 mirror 写进 `~/.docker/daemon.json` 不会报错，
+> 但 `docker info` 仍无 mirror、构建仍失败。colima 场景必须走 `colima.yaml` 或 `colima ssh` 进 VM 改。
+
