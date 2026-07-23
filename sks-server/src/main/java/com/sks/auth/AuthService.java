@@ -4,6 +4,7 @@ import com.sks.admin.RechargeOrderService;
 import com.sks.common.BizException;
 import com.sks.common.ErrorCode;
 import com.sks.common.JwtUtil;
+import com.sks.common.SmsClient;
 import com.sks.user.AppUser;
 import com.sks.user.AppUserMapper;
 import java.security.SecureRandom;
@@ -38,7 +39,8 @@ import org.springframework.transaction.annotation.Transactional;
  *       自调用）：{@code markUsed} + {@code app_user} 插入 + 钩子三步 + 签发 JWT 原子提交；钩子失败则全回滚
  *       （含 {@code markUsed} + {@code app_user}），重试登录 {@code findByPhone} 返回 null → {@code isNew=true}
  *       重新触发钩子，{@code credit} 的 {@code (biz_id, biz_type, type)} 幂等保证重试不重复入账。
- *   <li><b>SMS 发送留桩</b>：MVP 期只把验证码写入 {@code sms_code} 表 + 日志，不调真实网关（联调时替换）。
+ *   <li><b>SMS 发送</b>：MVP 期只把验证码写入 {@code sms_code} 表，经 {@link SmsClient} seam 发送（条件降级 + 真
+ *       SendSms）——key 空→stub 不抛；configured→真 SendSms，失败抛 SMS_SEND_FAILED 透传 controller 5003。
  * </ul>
  *
  * <p>本服务的额度相关操作仅限注册钩子一次性赠送体验额度（免费）——登录链路本身不扣费、不引入跨服务对账。
@@ -63,6 +65,7 @@ public class AuthService {
     private final AppUserMapper appUserMapper;
     private final JwtUtil jwtUtil;
     private final RechargeOrderService rechargeOrderService;
+    private final SmsClient smsClient;
     /**
      * Self 代理（{@code @Lazy} 注入破除构造期循环依赖）。用于在 {@link #login}（非事务）中通过 Spring 代理
      * 调用 {@link #completeLogin}（{@code @Transactional}）——直接 {@code this.completeLogin(...)} 自调用会
@@ -77,12 +80,14 @@ public class AuthService {
             AppUserMapper appUserMapper,
             JwtUtil jwtUtil,
             RechargeOrderService rechargeOrderService,
-            @Lazy AuthService self) {
+            @Lazy AuthService self,
+            SmsClient smsClient) {
         this.smsCodeMapper = smsCodeMapper;
         this.appUserMapper = appUserMapper;
         this.jwtUtil = jwtUtil;
         this.rechargeOrderService = rechargeOrderService;
         this.self = self;
+        this.smsClient = smsClient;
     }
 
     /** 登录成功后的返回体：JWT、用户 id、是否本次新建的 app_user。 */
@@ -105,8 +110,9 @@ public class AuthService {
         // err_count / used / created_at 走 DB 默认值
         smsCodeMapper.insert(row);
 
-        // MVP 留桩：联调时替换为阿里云 SMS。验证码已在 sms_code 表中，测试可直查。
-        log.info("[SMS-STUB] send code to phone={}: code={} (ttl={}min)", phone, code, CODE_TTL.toMinutes());
+        // §3 联调首检「阿里云短信」：经 SmsClient seam 发送（key 空→stub 不抛；configured→真 SendSms，
+        // 失败抛 SMS_SEND_FAILED 透传 controller 5003）。sms_code 行已落，验证码可直查。
+        smsClient.sendVerificationCode(phone, code);
     }
 
     /**

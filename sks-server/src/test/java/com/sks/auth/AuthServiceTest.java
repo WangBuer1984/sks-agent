@@ -8,14 +8,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.sks.AbstractDbTest;
 import com.sks.common.BizException;
 import com.sks.common.ErrorCode;
+import com.sks.common.SmsClient;
 import com.sks.user.AppUser;
 import com.sks.user.AppUserMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 
 /**
  * AuthService 的服务级集成测试：真实 Testcontainers PG + Flyway 迁移，验证三级频控与 5 次锁定逻辑。
@@ -26,6 +31,7 @@ class AuthServiceTest extends AbstractDbTest {
     @Autowired SmsCodeMapper smsCodeMapper;
     @Autowired AppUserMapper appUserMapper;
     @Autowired JdbcTemplate jdbcTemplate;
+    @MockBean SmsClient smsClient;
 
     /** 从 sms_code 表取最近一条真实验证码——MVP 期 SMS 发送留桩，验证码只落库打日志。 */
     private String realCodeOf(String phone) {
@@ -152,5 +158,14 @@ class AuthServiceTest extends AbstractDbTest {
         assertNotNull(result.token());
         assertEquals(existing.getId(), result.userId());
         assertTrue(!result.isNew());
+    }
+
+    @Test
+    void sendCodeDelegatesToSmsClient() {
+        String phone = "13900000099";
+        authService.sendCode(phone);
+        SmsCode row = smsCodeMapper.findMostRecent(phone);
+        assertNotNull(row, "sendCode 应落 sms_code 行");
+        verify(smsClient).sendVerificationCode(eq(phone), eq(row.getCode()));
     }
 }
