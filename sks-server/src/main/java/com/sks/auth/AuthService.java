@@ -10,8 +10,6 @@ import com.sks.user.AppUserMapper;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.OffsetDateTime;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -47,8 +45,6 @@ import org.springframework.transaction.annotation.Transactional;
  */
 @Service
 public class AuthService {
-
-    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
     /** 验证码有效期 5 分钟。 */
     private static final Duration CODE_TTL = Duration.ofMinutes(5);

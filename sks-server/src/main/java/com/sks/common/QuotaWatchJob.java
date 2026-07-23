@@ -13,13 +13,15 @@ import org.springframework.stereotype.Component;
  * 余额监控定时（P5 Task 5.1）——每日 9:00 查阿里云短信余额 + 智谱账户余额，低于阈值告警站长
  * （PRD §11.5 / 设计 §5.3 监控收尾）。
  *
- * <p><b>外部拨测与告警通道均为联调项</b>（与 P0 AuthService 的 SMS-STUB 同档，二者均待联调统一接线）：
+ * <p><b>告警通道已接线，余额查询与外部拨测为联调项</b>：
  * <ul>
- *   <li>{@link #querySmsBalance()} / {@link #queryGlmBalance()}：各厂商余额查询 API（key-gated 客户端，
- *       需 access-key / glm api-key via {@code .env}）。MVP 留桩返回 {@link Optional#empty()} + 联调 TODO。
- *   <li>{@link #sendAlert(String)}：经 {@link SmsClient} seam 发送（同 {@link com.sks.auth.AuthService#sendCode}，
- *       已接线）——key 空→stub；configured→真 SendSms，失败抛 SMS_SEND_FAILED，被 {@link #sweep} try/catch 兜底。
- *   <li>UptimeRobot 外部拨测：控制台配置，无代码（见 {@code deploy/OPS.md}）。
+ *   <li>{@link #sendAlert(String)}：<b>已接线</b>——经 {@link SmsClient} seam 发送（同 {@link
+ *       com.sks.auth.AuthService#sendCode}）。key 空→stub 不抛；configured→真 SendSms，失败抛
+ *       SMS_SEND_FAILED，被 {@link #sweep} try/catch 兜底不中断 Job。
+ *   <li>{@link #querySmsBalance()} / {@link #queryGlmBalance()}：<b>仍为桩</b>——各厂商余额查询 API
+ *       （阿里云 BSS OpenAPI / 智谱 BigModel，需 access-key / glm api-key via {@code .env}）。MVP 留桩返回
+ *       {@link Optional#empty()} + 联调 TODO。
+ *   <li>UptimeRobot 外部拨测：控制台配置，无代码（见 {@code deploy/OPS.md}），联调期接入。
  * </ul>
  *
  * <p><b>可单测部分</b>：{@link #checkAndAlert(Optional, Optional)} 是纯函数——给定两个余额
@@ -119,7 +121,8 @@ public class QuotaWatchJob {
 
     /**
      * 查阿里云短信余额（条数）。MVP 留桩返回 {@link Optional#empty()}——<b>联调</b>时替换为真实 API
-     * （阿里云 Dysmsapi 账户余额查询，需 access-key-id / access-key-secret via {@code .env}）。
+     * （阿里云 BSS OpenAPI {@code QueryAccountBalance}，需 access-key-id / access-key-secret via {@code .env}；
+     * dysmsapi 无余额查询接口，余额走 BSS——见方法体内联 TODO）。
      * 调用方 {@link #sweep} catch 一切异常并记 WARN，不中断 Job。
      */
     protected Optional<Integer> querySmsBalance() {

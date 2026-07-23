@@ -16,7 +16,8 @@
       "Bash(mvn -version)",
       "Bash(python3.12 --version)",
       "Bash(uv --version)",
-      "Bash(npm --version)"
+      "Bash(npm --version)",
+      "WebFetch(domain:api.aliyun.com)"
     ]
   }
 }
