@@ -49,10 +49,6 @@ public class AuthService {
 
     /** 验证码有效期 5 分钟。 */
     private static final Duration CODE_TTL = Duration.ofMinutes(5);
-    /** 连续错误 5 次进入锁定。 */
-    private static final int LOCK_ERR_THRESHOLD = 5;
-    /** 锁定时长 10 分钟（比验证码 5 分钟有效期长，覆盖整段锁定语义）。 */
-    private static final Duration LOCK_WINDOW = Duration.ofMinutes(10);
 
     private static final int RATE_LIMIT_1MIN = 1;
     private static final int RATE_LIMIT_1HOUR = 5;
