@@ -17,8 +17,8 @@ import org.springframework.stereotype.Component;
  * <ul>
  *   <li>{@link #querySmsBalance()} / {@link #queryGlmBalance()}：各厂商余额查询 API（key-gated 客户端，
  *       需 access-key / glm api-key via {@code .env}）。MVP 留桩返回 {@link Optional#empty()} + 联调 TODO。
- *   <li>{@link #sendAlert(String)}：告警通道（复用 SMS）。MVP 留桩日志 + 联调 TODO——<b>不</b>在本任务
- *       重构 P0 AuthService 的 SMS-STUB（out of scope, risk）。
+ *   <li>{@link #sendAlert(String)}：经 {@link SmsClient} seam 发送（同 {@link com.sks.auth.AuthService#sendCode}，
+ *       已接线）——key 空→stub；configured→真 SendSms，失败抛 SMS_SEND_FAILED，被 {@link #sweep} try/catch 兜底。
  *   <li>UptimeRobot 外部拨测：控制台配置，无代码（见 {@code deploy/OPS.md}）。
  * </ul>
  *
@@ -44,14 +44,17 @@ public class QuotaWatchJob {
     private final int smsThreshold;
     private final int glmThreshold;
     private final String adminPhone;
+    private final SmsClient smsClient;
 
     public QuotaWatchJob(
             @Value("${sks.quota.sms-threshold:100}") int smsThreshold,
             @Value("${sks.quota.glm-threshold:20}") int glmThreshold,
-            @Value("${sks.quota.admin-phone:}") String adminPhone) {
+            @Value("${sks.quota.admin-phone:}") String adminPhone,
+            SmsClient smsClient) {
         this.smsThreshold = smsThreshold;
         this.glmThreshold = glmThreshold;
         this.adminPhone = adminPhone;
+        this.smsClient = smsClient;
     }
 
     /**
@@ -121,6 +124,7 @@ public class QuotaWatchJob {
      */
     protected Optional<Integer> querySmsBalance() {
         // 联调 TODO: 接阿里云 SMS 余额查询 API。
+        // 余额查询在 BSS OpenAPI（com.aliyun:bssopenapi20171214），非 dysmsapi；下个任务接。
         log.debug("[STUB] querySmsBalance not wired (联调替换)");
         return Optional.empty();
     }
@@ -137,12 +141,12 @@ public class QuotaWatchJob {
     }
 
     /**
-     * 发告警给站长手机（复用 SMS 通道）。MVP 留桩日志——<b>联调</b>时替换为真实阿里云 SMS 发送
-     * （与 {@link com.sks.auth.AuthService#sendCode} 的 SMS-STUB 同档，二者均待联调统一接线，
-     * 本任务不重构 AuthService）。
+     * 发告警给站长手机（经 {@link SmsClient} seam，同 {@link com.sks.auth.AuthService#sendCode}，已接线）。
+     * key 空→stub 不抛；configured→真 SendSms，失败抛 SMS_SEND_FAILED，由 {@link #sweep} try/catch 兜底不中断 Job。
      */
     protected void sendAlert(String reason) {
-        // 联调 TODO: 接阿里云 SMS 发送告警到 sks.quota.admin-phone。
-        log.warn("[SMS-STUB] quota alert to admin={}: {}", adminPhone, reason);
+        // §3 联调首检「阿里云短信」：经 SmsClient seam 发告警到 admin-phone（key 空→stub；
+        // configured→真 SendSms，失败抛 SMS_SEND_FAILED，被 sweep try/catch 兜底不中断 Job）。
+        smsClient.sendAlert(adminPhone, reason);
     }
 }
