@@ -21,7 +21,8 @@ public enum ErrorCode {
     UNAUTHORIZED(4010, "未登录或登录已过期"),
     ADMIN_UNAUTHORIZED(4011, "管理员未登录或无权限"),
     AI_FAILED(5001, "AI 服务异常，请稍后再试"),
-    CONTENT_BLOCKED(5002, "内容不符合安全规范，已被拦截");
+    CONTENT_BLOCKED(5002, "内容不符合安全规范，已被拦截"),
+    SMS_SEND_FAILED(5003, "短信发送失败，请稍后再试");
 
     private final int code;
     private final String msg;

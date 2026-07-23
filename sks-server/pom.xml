@@ -75,6 +75,13 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- 阿里云短信 Dysmsapi V2 Tea 同步 SDK（§3 联调首检「阿里云短信」：sendCode/sendAlert 真发送） -->
+        <dependency>
+            <groupId>com.aliyun</groupId>
+            <artifactId>dysmsapi20170525</artifactId>
+            <version>4.6.0</version>
+        </dependency>
+
         <!-- 测试 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
