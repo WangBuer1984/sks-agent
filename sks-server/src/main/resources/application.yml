@@ -66,16 +66,17 @@ sks:
   quota:
     sms-threshold: ${SKS_QUOTA_SMS_THRESHOLD:100}
     glm-threshold: ${SKS_QUOTA_GLM_THRESHOLD:20}
-  # 阿里云短信（§3 联调首检「阿里云短信」——AliyunSmsClient 条件降级：key/template 空→stub 不抛；
-  # 齐全→真 SendSms，失败抛 SMS_SEND_FAILED 5003）。env 来自 .env（gitignored）。
+  # 阿里云 DYPNS 短信认证（spec §3.3——AliyunSmsAuthClient 条件降级：key/template 空→stub 不抛；
+  # 齐全→真 SendSmsVerifyCode 字面码模式，失败抛 SMS_SEND_FAILED 5003）。env 来自 .env（gitignored）。
   # sks-server 用 env_file:.env，所有 ALIYUN_* 已自动进容器，无需改 docker-compose.yml。
   sms:
     access-key-id: ${ALIYUN_ACCESS_KEY_ID:}
     access-key-secret: ${ALIYUN_ACCESS_KEY_SECRET:}
-    endpoint: ${ALIYUN_SMS_ENDPOINT:dysmsapi.aliyuncs.com}
-    sign-name: ${ALIYUN_SMS_SIGN:}
-    verify-template-code: ${ALIYUN_SMS_VERIFY_TEMPLATE:}
-    alert-template-code: ${ALIYUN_SMS_ALERT_TEMPLATE:}
+    endpoint: ${ALIYUN_SMS_ENDPOINT:dypnsapi.aliyuncs.com}    # DYPNS（非 dysmsapi）
+    sign-name: ${ALIYUN_SMS_SIGN:}                             # 赠送签名（如 速通互联验证码）
+    template-login: ${ALIYUN_SMS_TEMPLATE_LOGIN:}              # 登录/注册赠送模板（如 100002）
+    template-verify-old: ${ALIYUN_SMS_TEMPLATE_VERIFY_OLD:}   # 换绑验旧号赠送模板
+    template-bind-new: ${ALIYUN_SMS_TEMPLATE_BIND_NEW:}      # 换绑验新号赠送模板
   # 邮件告警收件人（MailAlertNotifier）。空 → stub 不发；非空 + spring.mail.host 非空 → 真发邮件。
   # 值来自 .env SKS_ALERT_ADMIN_EMAIL（站长邮箱）。
   alert:

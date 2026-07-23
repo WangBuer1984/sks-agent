@@ -40,7 +40,7 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 | `TIKHUB_API_KEY` | ❌ 空 | **联调必填**：TikHub。空则 precheck/hot_board/拆账号全 DataSourceError |
 | `ALIYUN_ACCESS_KEY_ID` | ❌ 空 | **联调必填**：阿里云主账号 AK。空则内容安全 fail-closed（**所有 UGC 被拦**）+ ASR + 余额查询 |
 | `ALIYUN_ACCESS_KEY_SECRET` | ❌ 空 | **联调必填**：阿里云 SK |
-| `ALIYUN_SMS_SIGN` | ❌ 空 | **联调必填**：短信签名（验证码 + QuotaWatch 告警） |
+| `ALIYUN_SMS_SIGN` | ❌ 空 | **联调必填**：DYPNS 赠送签名（如 `速通互联验证码`，登录/注册 + 换绑验旧/新号） |
 | `SPRING_MAIL_HOST` | ❌ 空 | **联调必填**：SMTP 主机（告警邮件通道） |
 | `SPRING_MAIL_PORT` | 465 | SMTPS 端口（465 需 ssl.enable=true，已配） |
 | `SPRING_MAIL_USERNAME` | ❌ 空 | **联调必填**：SMTP 账号 |
@@ -59,8 +59,9 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 | `SKS_AI_READ_TIMEOUT` / `SKS_AI_CONNECT_TIMEOUT` | AiClient 超时（§5.3 链） | 默认 270 / 10 秒（**勿低于 270，否则 §5.3 链断裂**） |
 | `sks.review.hot-threshold` / `flop-threshold` | 复盘判态阈值 | 默认 3.0 / 0.5（近 30 天均值 × 阈值） |
 | `sks.quota.sms-threshold` / `glm-threshold` | 余额告警阈值 | 默认 100 条 / ¥20 |
-| `ALIYUN_SMS_VERIFY_TEMPLATE` | 验证码模板（含 `${code}` 变量，审批通过） | 联调必填：空则 sendCode 走 stub 不真发 |
-| `ALIYUN_SMS_ALERT_TEMPLATE` | 告警模板（含 `${reason}` 变量） | 联调必填：空则 sendAlert 走 stub |
+| `ALIYUN_SMS_TEMPLATE_LOGIN` | DYPNS 登录/注册赠送模板（如 `100002`，字面码 `{"code":"<6>","min":"5"}`） | 联调必填：空则 sendCode 走 stub 不真发 |
+| `ALIYUN_SMS_TEMPLATE_VERIFY_OLD` | DYPNS 换绑验旧号赠送模板 | 联调必填空：空则 verify-old 发码走 stub |
+| `ALIYUN_SMS_TEMPLATE_BIND_NEW` | DYPNS 换绑验新号赠送模板 | 联调必填空：空则 verify-new 发码走 stub |
 
 ---
 

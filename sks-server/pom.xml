@@ -75,14 +75,8 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- 阿里云短信 Dysmsapi V2 Tea 同步 SDK（§3 联调首检「阿里云短信」：sendCode/sendAlert 真发送） -->
-        <dependency>
-            <groupId>com.aliyun</groupId>
-            <artifactId>dysmsapi20170525</artifactId>
-            <version>4.6.0</version>
-        </dependency>
-
-        <!-- 阿里云号码认证服务 DYPNS（短信认证 SendSmsVerifyCode，个人实名 + 赠送签名/模板） -->
+        <!-- 阿里云号码认证服务 DYPNS（短信认证 SendSmsVerifyCode，个人实名 + 赠送签名/模板；
+             替换 dysmsapi20170525——字面码模式，Java 自生成码 + 自比对，不调 CheckSmsVerifyCode） -->
         <dependency>
             <groupId>com.aliyun</groupId>
             <artifactId>dypnsapi20170525</artifactId>

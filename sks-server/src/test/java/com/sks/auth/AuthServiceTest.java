@@ -9,6 +9,7 @@ import com.sks.AbstractDbTest;
 import com.sks.common.BizException;
 import com.sks.common.ErrorCode;
 import com.sks.common.SmsClient;
+import com.sks.common.SmsScene;
 import com.sks.user.AppUser;
 import com.sks.user.AppUserMapper;
 import org.junit.jupiter.api.AfterEach;
@@ -166,6 +167,6 @@ class AuthServiceTest extends AbstractDbTest {
         authService.sendCode(phone);
         SmsCode row = smsCodeMapper.findMostRecent(phone);
         assertNotNull(row, "sendCode 应落 sms_code 行");
-        verify(smsClient).sendVerificationCode(eq(phone), eq(row.getCode()));
+        verify(smsClient).sendVerificationCode(eq(phone), eq(row.getCode()), eq(SmsScene.LOGIN_REGISTER));
     }
 }

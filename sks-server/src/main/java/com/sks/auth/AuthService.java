@@ -107,9 +107,10 @@ public class AuthService {
         // err_count / used / created_at 走 DB 默认值
         smsCodeMapper.insert(row);
 
-        // §3 联调首检「阿里云短信」：经 SmsClient seam 发送（key 空→stub 不抛；configured→真 SendSms，
+        // §3 联调首检「阿里云短信」：经 SmsClient seam 发送（key 空→stub 不抛；configured→真 SendSmsVerifyCode，
         // 失败抛 SMS_SEND_FAILED 透传 controller 5003）。sms_code 行已落，验证码可直查。
-        smsClient.sendVerificationCode(phone, code);
+        // scene=LOGIN_REGISTER 选登录/注册赠送模板（spec §3.2）。
+        smsClient.sendVerificationCode(phone, code, SmsScene.LOGIN_REGISTER);
     }
 
     /**
