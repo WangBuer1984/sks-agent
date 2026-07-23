@@ -62,11 +62,10 @@ sks:
     hot-threshold: ${SKS_REVIEW_HOT_THRESHOLD:3.0}
     flop-threshold: ${SKS_REVIEW_FLOP_THRESHOLD:0.5}
   # 余额监控（P5 Task 5.1 QuotaWatchJob）——阈值严格 <（at-threshold 不告警）。
-  # admin-phone 来自 .env SKS_QUOTA_ADMIN_PHONE；余额查询 API + 告警 SMS 通道为联调项（留桩）。
+  # 余额查询 API 为联调项（留桩）；告警走邮件（sks.alert.admin-email / MailAlertNotifier）。
   quota:
     sms-threshold: ${SKS_QUOTA_SMS_THRESHOLD:100}
     glm-threshold: ${SKS_QUOTA_GLM_THRESHOLD:20}
-    admin-phone: ${SKS_QUOTA_ADMIN_PHONE:}
   # 阿里云短信（§3 联调首检「阿里云短信」——AliyunSmsClient 条件降级：key/template 空→stub 不抛；
   # 齐全→真 SendSms，失败抛 SMS_SEND_FAILED 5003）。env 来自 .env（gitignored）。
   # sks-server 用 env_file:.env，所有 ALIYUN_* 已自动进容器，无需改 docker-compose.yml。

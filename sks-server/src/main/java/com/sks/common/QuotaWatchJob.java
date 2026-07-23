@@ -15,9 +15,10 @@ import org.springframework.stereotype.Component;
  *
  * <p><b>告警通道已接线，余额查询与外部拨测为联调项</b>：
  * <ul>
- *   <li>{@link #sendAlert(String)}：<b>已接线</b>——经 {@link SmsClient} seam 发送（同 {@link
- *       com.sks.auth.AuthService#sendCode}）。key 空→stub 不抛；configured→真 SendSms，失败抛
- *       SMS_SEND_FAILED，被 {@link #sweep} try/catch 兜底不中断 Job。
+ *   <li>{@link #sendAlert(String)}：<b>已接线</b>——经 {@link AlertNotifier} 发邮件到站长（{@link
+ *       MailAlertNotifier} 读 {@code sks.alert.admin-email} + {@code spring.mail.host}，host 空→stub
+ *       不抛；configured→真发邮件，失败由 {@link MailAlertNotifier} 吞掉不抛，被 {@link #sweep}
+ *       try/catch 兜底不中断 Job）。
  *   <li>{@link #querySmsBalance()} / {@link #queryGlmBalance()}：<b>仍为桩</b>——各厂商余额查询 API
  *       （阿里云 BSS OpenAPI / 智谱 BigModel，需 access-key / glm api-key via {@code .env}）。MVP 留桩返回
  *       {@link Optional#empty()} + 联调 TODO。
@@ -45,18 +46,15 @@ public class QuotaWatchJob {
 
     private final int smsThreshold;
     private final int glmThreshold;
-    private final String adminPhone;
-    private final SmsClient smsClient;
+    private final AlertNotifier alertNotifier;
 
     public QuotaWatchJob(
             @Value("${sks.quota.sms-threshold:100}") int smsThreshold,
             @Value("${sks.quota.glm-threshold:20}") int glmThreshold,
-            @Value("${sks.quota.admin-phone:}") String adminPhone,
-            SmsClient smsClient) {
+            AlertNotifier alertNotifier) {
         this.smsThreshold = smsThreshold;
         this.glmThreshold = glmThreshold;
-        this.adminPhone = adminPhone;
-        this.smsClient = smsClient;
+        this.alertNotifier = alertNotifier;
     }
 
     /**
@@ -144,12 +142,11 @@ public class QuotaWatchJob {
     }
 
     /**
-     * 发告警给站长手机（经 {@link SmsClient} seam，同 {@link com.sks.auth.AuthService#sendCode}，已接线）。
-     * key 空→stub 不抛；configured→真 SendSms，失败抛 SMS_SEND_FAILED，由 {@link #sweep} try/catch 兜底不中断 Job。
+     * 发告警给站长（经 {@link AlertNotifier} 发邮件，{@link MailAlertNotifier} 内部读
+     * {@code sks.alert.admin-email} + {@code spring.mail.host}，host 空→stub 不抛；
+     * configured→真发邮件，失败由 {@link MailAlertNotifier} 吞掉不抛，由 {@link #sweep} try/catch 兜底不中断 Job）。
      */
     protected void sendAlert(String reason) {
-        // §3 联调首检「阿里云短信」：经 SmsClient seam 发告警到 admin-phone（key 空→stub；
-        // configured→真 SendSms，失败抛 SMS_SEND_FAILED，被 sweep try/catch 兜底不中断 Job）。
-        smsClient.sendAlert(adminPhone, reason);
+        alertNotifier.notify("SKS 余额告警", reason);
     }
 }

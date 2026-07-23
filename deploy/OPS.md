@@ -113,14 +113,15 @@ envsubst < deploy/nginx/50x.html > deploy/nginx/50x.html.real && mv deploy/nginx
   返回 `Optional.empty()`）；
 - 阈值判定（纯函数 `checkAndAlert`，可单测）：SMS <100 条 / GLM <¥20 触发告警，严格 `<`（at-threshold 不告警）；
 - 单个查询抛异常 → catch 记 WARN + 跳过该项，不中断 Job；
-- 告警走 `sendAlert`（**联调留桩**，与 `AuthService` 的 SMS-STUB 同档，待统一接线）。
+- 告警走 `sendAlert` → `AlertNotifier`（**已接线**，邮件通道）：`MailAlertNotifier` 读
+  `sks.alert.admin-email` + `spring.mail.host`，host 空→stub 不发；configured→真发邮件，失败 `log.warn`
+  吞掉不抛，被 `sweep` try/catch 兜底不中断 Job。
 
-阈值 + 站长手机 via `application.yml`：
+阈值 via `application.yml`；告警收件人走 `sks.alert.admin-email`（见 §邮件告警）：
 
 ```
 sks.quota.sms-threshold   (默认 100)
 sks.quota.glm-threshold   (默认 20)
-sks.quota.admin-phone     (from .env SKS_QUOTA_ADMIN_PHONE)
 ```
 
 ## 6. 全链路超时对齐（§5.3 — load-bearing）
