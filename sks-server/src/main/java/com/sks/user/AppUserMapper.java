@@ -20,4 +20,9 @@ public interface AppUserMapper extends BaseMapper<AppUser> {
     /** 按手机尾号（后 4-6 位）后缀匹配，管理端「尾号搜索 → 多人逐一确认 → 开通」入口。 */
     @Select("SELECT * FROM app_user WHERE phone LIKE '%' || #{phoneTail} ORDER BY id")
     List<AppUser> findByPhoneTail(@Param("phoneTail") String phoneTail);
+
+    /** verify-new 成功：更新用户绑定手机号（UNIQUE 约束兜底并发，冲突抛 DuplicateKeyException）。 */
+    @org.apache.ibatis.annotations.Update(
+            "UPDATE app_user SET phone = #{phone} WHERE id = #{userId}")
+    int updatePhone(@Param("userId") Long userId, @Param("phone") String phone);
 }

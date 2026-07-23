@@ -21,6 +21,8 @@ public class SmsCode {
     private OffsetDateTime expireAt;
     private Integer errCount;
     private Boolean used;
+    private String scene;
+    private String sessionToken;
     private OffsetDateTime createdAt;
 
     public Long getId() { return id; }
@@ -40,6 +42,11 @@ public class SmsCode {
 
     public Boolean getUsed() { return used; }
     public void setUsed(Boolean used) { this.used = used; }
+
+    public String getScene() { return scene; }
+    public void setScene(String scene) { this.scene = scene; }
+    public String getSessionToken() { return sessionToken; }
+    public void setSessionToken(String sessionToken) { this.sessionToken = sessionToken; }
 
     public OffsetDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(OffsetDateTime createdAt) { this.createdAt = createdAt; }

@@ -18,6 +18,8 @@ public enum ErrorCode {
     SMS_CODE_LOCKED(4004, "验证码错误次数过多，已锁定 10 分钟"),
     PARAM_INVALID(4005, "参数不合法"),
     CARD_IN_USE(4006, "卡片已被稿件引用，无法直接删除"),
+    PHONE_ALREADY_BOUND(4007, "该手机号已被其他账号绑定"),
+    PHONE_CHANGE_TOKEN_INVALID(4008, "换绑凭证无效或已过期，请重新发起"),
     UNAUTHORIZED(4010, "未登录或登录已过期"),
     ADMIN_UNAUTHORIZED(4011, "管理员未登录或无权限"),
     AI_FAILED(5001, "AI 服务异常，请稍后再试"),
