@@ -5,6 +5,7 @@ import com.sks.common.BizException;
 import com.sks.common.ErrorCode;
 import com.sks.common.JwtUtil;
 import com.sks.common.SmsClient;
+import com.sks.common.SmsScene;
 import com.sks.user.AppUser;
 import com.sks.user.AppUserMapper;
 import java.security.SecureRandom;
@@ -132,7 +133,7 @@ public class AuthService {
     public LoginResult login(String phone, String code) {
         checkLocked(phone);
 
-        SmsCode active = smsCodeMapper.findActiveCode(phone);
+        SmsCode active = smsCodeMapper.findActiveCode(phone, SmsScene.LOGIN_REGISTER.name());
         if (active == null) {
             // 没有可用码（未发、已用、已过期）——直接报错，无 err_count 可累加
             throw new BizException(ErrorCode.SMS_CODE_INVALID);
@@ -200,18 +201,14 @@ public class AuthService {
     }
 
     /**
-     * 锁定判定：最近一条码 {@code err_count >= 5} 且 {@code created_at} 距今不足 10 分钟即视为锁定。
-     * 复用已有列，无需新列；锁定期间不可登录、不可发新码。
+     * 锁定判定（ANY-row，spec §3.0）：任一 scene 的码 err_count>=5 且 10 分钟内即视为全号锁。
+     *
+     * <p>委派 {@link SmsCodeMapper#existsLocked}——任一 scene 锁 5 次则全号锁，防稀释绕过
+     * （攻击者无法靠在另一 scene 跑 4 次再切 scene 来规避锁定窗口）。单 scene 行为等价于原
+     * 「最近一条 err_count>=5 且 10 分钟内」语义：sendCode 写的同一 scene 码连错 5 次即锁。
      */
     private void checkLocked(String phone) {
-        SmsCode latest = smsCodeMapper.findMostRecent(phone);
-        if (latest == null) {
-            return;
-        }
-        if (latest.getErrCount() != null
-                && latest.getErrCount() >= LOCK_ERR_THRESHOLD
-                && latest.getCreatedAt() != null
-                && latest.getCreatedAt().isAfter(OffsetDateTime.now().minus(LOCK_WINDOW))) {
+        if (smsCodeMapper.existsLocked(phone)) {
             throw new BizException(ErrorCode.SMS_CODE_LOCKED);
         }
     }
