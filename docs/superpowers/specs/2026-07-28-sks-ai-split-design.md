@@ -1,208 +1,242 @@
-# sks-ai 拆分为独立仓库 — 设计文档
+# sks-agent 三仓拆分 + 镜像化 — 设计文档
 
 > 日期：2026-07-28
-> 状态：已通过 brainstorming，待用户复核后进 writing-plans
+> 状态：已通过 brainstorming（修订版），待用户复核后进 writing-plans
+> 修订：从"只拆 sks-ai + 独立 compose + external 网络"改为"三仓对称 + 镜像 + GHCR + 单 compose"，更简更干净。
 
 ## 1. 目标与动机
 
-把 `sks-ai`（Python FastAPI AI 服务）从当前 monorepo 拆出，形成**独立仓库 + 独立 `.env` + 独立部署 compose**，以便 sks-ai 能**独立部署 / 独立发版**，与 sks-server 解耦发版节奏。
+把当前 monorepo 拆成**三个对称仓库**，sks-server 与 sks-ai 各自**独立发版**（不同版本号 / 各自 CI / 各自 git tag / 各自构建镜像），且都能**独立部署**（bump 镜像 tag、单独重启，不连带对方）。deploy 仓集中持有 compose + .env + 前端 + 部署文档。
 
-**已排除的替代方案**：monorepo + per-service CI（不拆仓库，仅独立 CI/CD）——用户明确要仓库级分离。
+**已排除的替代方案**：
+- 不拆仓、monorepo + per-service CI（用户明确要仓库级分离 + 各自 CI/tag）。
+- 只拆 sks-ai、原仓保留 sks-server+deploy（非对称）——用户选三仓对称，sks-server 也独立发版。
+- 拆仓 + 各自独立 compose + external 共享网络（方案 A）——引入跨 compose 网络复杂度，且 .env 跨仓同步负担。镜像 + 单 compose 方案更简。
 
 ## 2. 关键决策（brainstorming 已定）
 
 | 决策 | 选择 | 理由 |
 |---|---|---|
-| 是否拆仓库 | 是，方案 A 干净拆分 | 满足独立部署/发版目标，最简 |
-| Postgres | 连同一个 pg 实例（共享） | 保留「单库三合一」+ `analyze_task`/`kb_card` 共享表读写设计；拆库会破坏架构，不取 |
-| Git 历史 | 保留（`git subtree split` 抽离） | 追溯性好 |
-| 部署 artifact | 独立 `docker-compose.yml` | 与现有 Dockerfile 一致，最简 |
-| 跨 compose 网络 | **external 共享 docker 网络 `sks-net`** | 两 compose 默认各有独立网络，`postgres`/`sks-ai` DNS 名跨项目解析不到 → pg、sks-server→sks-ai 三链路全断。共享 external 网络让 DNS 名跨项目成立，`DATABASE_URL`/`SKS_AI_BASE_URL` 一个不用改，sks-ai 保持 `expose` 不发宿主端口，硬约束不破 |
+| 拆仓范围 | **三仓对称**：sks-server / sks-ai / sks-agent-deploy | 两服务各自独立发版，对称最干净 |
+| 部署模型 | **镜像化**：各服务仓 CI 构建+推镜像到 GHCR，deploy 仓 compose 按镜像引用 | 单 compose 单网络，DNS 名天然互通，无 external 网络复杂度；独立部署=bump tag+`up -d <服务>` |
+| 镜像 registry | **GHCR（ghcr.io）** | 免费、与 GitHub 仓库集成、solo 零成本 |
+| Postgres | 连同一个 pg 实例（deploy 仓 compose 管） | 保留「单库三合一」+ `analyze_task`/`kb_card` 共享表读写；拆库破坏架构，不取 |
+| Git 历史 | 保留（`git subtree split` 抽离各子目录） | 追溯性好 |
+| `.env` 归属 | **单份，住 deploy 仓** | compose `env_file` 运行时注入两服务镜像；跨仓 .env 同步负担整个消失 |
+| 网络 | deploy 仓单 compose 单默认网络 | `postgres`/`sks-ai`/`sks-server` DNS 名天然互通，无需 external |
 
-## 3. 仓库结构与文件归属
+## 3. 仓库结构与文件归属（三仓）
 
-### 3.1 新仓库 `sks-ai`（独立 repo）
+### 3.1 `sks-server` 仓（Java 服务）
+
+```
+sks-server/
+├── src/                      ← 原样
+├── Dockerfile                ← 原样
+├── pom.xml, mvnw, .mvn/      ← 原样
+├── .github/workflows/ci.yml  ← 新增：build + push 镜像到 GHCR
+├── .env.example              ← 新增：本地 dev 用（运行时由 deploy 仓 compose 注入，此文件仅本地跑参考）
+├── .gitignore
+└── README.md                 ← 新增：本地跑 + 镜像构建说明
+```
+独立发版：git tag → CI build `ghcr.io/wangbuer1984/sks-server:<tag>`。
+
+### 3.2 `sks-ai` 仓（Python 服务）
 
 ```
 sks-ai/
-├── app/                      ← 原样搬过来
-├── tests/                    ← 原样搬过来
-├── Dockerfile                ← 原样
-├── pyproject.toml            ← 原样
-├── uv.lock                   ← 原样
-├── docker-compose.yml        ← 新增（只跑 sks-ai，连外部 pg）
-├── .env.example              ← 新增（sks-ai 的 env 契约）
-├── .gitignore                ← 新增（.env 等）
-├── README.md                 ← 新增（怎么跑/部署）
+├── app/, tests/              ← 原样
+├── Dockerfile, pyproject.toml, uv.lock  ← 原样
+├── .github/workflows/ci.yml  ← 新增：build + push 镜像到 GHCR
+├── .env.example              ← 新增：本地 dev 用（同上，运行时由 deploy 仓注入）
+├── .gitignore
+├── README.md                 ← 新增：本地跑 + 镜像构建
 └── docs/
-    └── API_CONTRACT.md       ← 新增（/ai/* 端点契约，给 Java 仓消费）
+    └── API_CONTRACT.md       ← 新增：/ai/* 端点契约 + 共享表契约（sks-ai 是服务提供方，契约归它拥有）
 ```
+独立发版：git tag → CI build `ghcr.io/wangbuer1984/sks-ai:<tag>`。
+清理：`app/config.py` 删 `ALIYUN_SMS_SIGN` 字段（Python 无一处用，§4）。
 
-### 3.2 原仓库（变 sks-server + sks-web + deploy + docs）
+### 3.3 `sks-agent-deploy` 仓（部署/编排/前端/文档）
 
-- 删掉 `sks-ai/` 目录
-- `docker-compose.yml` 移除 sks-ai 服务块（保留 sks-server + nginx + postgres）
-- `CLAUDE.md`、`docs/`、`deploy/` 更新：sks-ai 描述从「子目录」改为「独立仓库」，跨仓协调靠 env
-- 根 `.env.example` 去掉 sks-ai 专用 key，保留共享 key
-
-## 4. .env 跨仓契约
-
-两仓 `.env` 分工：
-
-| key | sks-ai `.env` | 原仓 `.env` | 说明 |
-|---|---|---|---|
-| `SERVICE_TOKEN` | ✅ | ✅ | **必须两边一致**（Java↔Python 鉴权）|
-| `DATABASE_URL` / `POSTGRES_*` | ✅（DATABASE_URL）| ✅（POSTGRES_*）| **连同一个 pg**（`postgres` 容器在共享 `sks-net`），值对得上 |
-| `ALIYUN_ACCESS_KEY_ID/SECRET` | ✅ | ✅ | 同一阿里云账号，两边一致 |
-| `ZHIPU_API_KEY`、`TIKHUB_API_KEY` | ✅ | ❌ | sks-ai 专用 |
-| `ZHIPU_BASE_URL`、`TIKHUB_BASE_URL`、`ALIYUN_CONTENT_SAFETY_ENDPOINT` | ✅（注释带默认值）| ❌ | config.py 有默认值，`.env.example` 列出注释「默认 xxx，一般不改」 |
-| `ALIYUN_ASR_KEY`、`ALIYUN_ASR_APP_KEY` | ✅ | ❌ | sks-ai 专用（ASR）|
-| `JWT_SECRET_*`、`ADMIN_SEED_*`、`TRIAL_CREDIT`、`ALIYUN_SMS_TEMPLATE_*`、`SPRING_MAIL_*`、`ALIYUN_SMS_SIGN` | ❌ | ✅ | 原仓专用 |
-
-**`ALIYUN_SMS_SIGN` 清理**：Python 的 `config.py` 声明了它但全代码库无一处使用（SMS 是 Java 侧 DYPNS 的事）。拆分正是清掉它的好时机——从 `config.py` 字段 + 原 compose `sks-ai` 块的 `environment` 传参里一并删除，env 契约表不列它。
-
-**跨仓共享密钥**（`SERVICE_TOKEN`、pg 凭据、`ALIYUN_ACCESS_KEY_*`）写进两边 `.env.example` 注释 + 各自 README「跨仓契约」小节：轮换时两边都要改。这是方案 A 唯一协调负担，靠文档约束。
-
-## 5. 跨 compose 网络（核心决策）+ sks-ai 的 docker-compose.yml
-
-### 5.1 为什么必须 external 共享网络
-
-两个独立 compose 项目默认各有各的网络，拆开后三条链路同时断：
-
-- **sks-ai → pg**：`DATABASE_URL` 指 `postgres:5432`（compose 内网 DNS 名），新 compose 解析不到；原仓 compose 的 pg 没发宿主端口，没有值能让 sks-ai 连上。
-- **sks-server → sks-ai**：`SKS_AI_BASE_URL=http://sks-ai:8000`（`application.yml` 默认），`sks-ai` DNS 名跨 compose 解析不到。
-- **`ports: 8000:8000`**：发到宿主所有接口，云服务器不配防火墙就公网可达，违反 CLAUDE.md「Python 不暴露公网」硬约束。而 `expose` 在独立 compose 下只对自己项目网络有效，sks-server 够不着——一个不安全一个不工作。
-
-**解法**：external 共享 docker 网络 `sks-net`。
-
-```bash
-docker network create sks-net   # 一次性建好（部署前）
 ```
+sks-agent-deploy/
+├── docker-compose.yml        ← 改：sks-server/sks-ai 按镜像引用，postgres/nginx 本地 build
+├── .env.example              ← 单份 env 契约（运行时 .env 住这里）
+├── sks-web/                  ← 前端原样（nginx 镜像 build 时用其 dist）
+├── deploy/
+│   ├── nginx/                ← nginx 镜像 + nginx.conf
+│   ├── OPS.md, GO_LIVE_CHECKLIST.md, backup/
+├── docs/                     ← PRD、tech-design、MVP plan、学习文档、本 spec
+├── CLAUDE.md                 ← 更新：三仓架构说明
+└── README.md                 ← 新增：如何用本仓部署全栈（compose up + env 配置 + 启动顺序）
+```
+原仓库改造而来：删 `sks-ai/`、`sks-server/` 目录，保留其余。GitHub 仓库名可改 `sks-agent-deploy`（或保留原名）。
 
-两仓 compose 都把 `sks-net` 声明为 `external: true`（不再各自建同名 bridge 网络）。效果：
-- `postgres`、`sks-ai` 两个 DNS 名跨项目照常解析。
-- `DATABASE_URL`、`SKS_AI_BASE_URL` **一个都不用改**（仍用容器名）。
-- sks-ai 保持 `expose: 8000`（不发宿主端口），硬约束原样保住，sks-server 经 `sks-net` reach 到它。
+## 4. .env 契约（单份住 deploy 仓，无跨仓同步）
 
-### 5.2 sks-ai 的 docker-compose.yml
+**关键简化**：镜像 + 单 compose 方案下，`.env` 只住 **deploy 仓**一份。deploy 仓 `docker-compose.yml` 用 `env_file: .env` 把整文件注入 sks-server / sks-ai 两个容器。**不再有两份 .env 跨仓同步 SERVICE_TOKEN 的负担**——这是相对方案 A 最大的简化。
+
+### deploy 仓 `.env.example`（单份，全量）
+
+包含所有 key（运行时注入两服务）：
+
+| key | 注入到 | 说明 |
+|---|---|---|
+| `POSTGRES_DB/USER/PASSWORD` | postgres + sks-server + sks-ai | pg 建库 + 两服务连库 |
+| `DATABASE_URL` | sks-ai | Python 连 pg（`postgresql://...@postgres:5432/...`）|
+| `SPRING_DATASOURCE_*` | sks-server | Java 连 pg（deploy 仓 compose 的 environment 块注入，指向 `postgres:5432`）|
+| `JWT_SECRET_USER/ADMIN` | sks-server | Java JWT 签发 |
+| `SERVICE_TOKEN` | sks-server + sks-ai | **单份，两边一致天然保证**（同一个 .env）|
+| `ADMIN_SEED_*`、`TRIAL_CREDIT` | sks-server | Java admin 种子 + 赠额度 |
+| `ALIYUN_ACCESS_KEY_ID/SECRET` | sks-server + sks-ai | 同一阿里云账号（SMS/ASR/内容安全）|
+| `ALIYUN_SMS_*`（sign/template）| sks-server | Java DYPNS 短信 |
+| `ALIYUN_ASR_KEY`、`ALIYUN_ASR_APP_KEY` | sks-ai | Python ASR |
+| `ZHIPU_API_KEY`、`TIKHUB_API_KEY` | sks-ai | Python LLM/数据 |
+| `ZHIPU_BASE_URL`、`TIKHUB_BASE_URL`、`ALIYUN_CONTENT_SAFETY_ENDPOINT` | sks-ai | config.py 有默认值，`.env.example` 注释「默认 xxx，一般不改」|
+| `SPRING_MAIL_*`、`SKS_ALERT_ADMIN_EMAIL` | sks-server | Java 邮件告警 |
+
+### 服务仓的 `.env.example`（仅本地 dev 参考）
+
+sks-server / sks-ai 仓各放一份**精简** `.env.example`，只列自己 dev 本地跑需要的 key（带注释「运行时由 deploy 仓 compose 注入，本文件仅本地调试参考」）。这是本地 `uv run uvicorn` / `./mvnw spring-boot:run` 时 `source .env` 用。
+
+**`ALIYUN_SMS_SIGN` 清理**：Python `config.py` 声明了它但全代码库无一处使用（SMS 是 Java 的事）。拆分时从 `config.py` 字段 + deploy 仓 compose `sks-ai` 块 `environment` 传参里一并删除。
+
+## 5. 网络 + deploy 仓的镜像化 docker-compose.yml
+
+### 5.1 网络（单 compose 单网络，无 external 舞蹈）
+
+deploy 仓**单 compose 管四服务**（postgres / sks-server / sks-ai / nginx），默认一个网络。`postgres`、`sks-ai`、`sks-server` DNS 名天然互通，**无需 external 共享网络**（这是镜像方案相对方案 A 的核心简化）。sks-ai `expose: 8000` 不发宿主端口，硬约束「Python 不暴露公网」原样保住，sks-server 经 compose 内网 reach。
+
+### 5.2 deploy 仓 docker-compose.yml（镜像化）
 
 ```yaml
 services:
-  sks-ai:
-    build: .
-    container_name: sks-ai
-    restart: unless-stopped
+  postgres:
+    image: pgvector/pgvector:pg16
+    # ...（同现状，env 建库）
+
+  sks-server:
+    image: ghcr.io/wangbuer1984/sks-server:latest   # 按镜像引用，不 build
     env_file: .env
     environment:
-      # 连共享 pg（postgres 容器在 sks-net 上，原仓 compose 管）。值来自 .env。
-      DATABASE_URL: ${DATABASE_URL}
-      SERVICE_TOKEN: ${SERVICE_TOKEN}
-    expose:
-      - "8000"              # 只在 sks-net 内可达，不发宿主（硬约束：Python 不暴露公网）
-    networks:
-      - sks-net
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      # ...（同现状）
+    depends_on: [postgres]
+    expose: ["8080"]
 
-networks:
-  sks-net:
-    external: true           # 部署前 docker network create sks-net
+  sks-ai:
+    image: ghcr.io/wangbuer1984/sks-ai:latest        # 按镜像引用
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on: [postgres]
+    expose: ["8000"]
+
+  nginx:
+    build: { context: ., dockerfile: deploy/nginx/Dockerfile }   # 仍本地 build（含前端 dist）
+    ports: ["80:80"]
+    depends_on: [sks-server]
 ```
 
-### 5.3 原仓 docker-compose.yml 的对应改动
+### 5.3 独立部署怎么操作
 
-- 删 sks-ai 服务块（§3.2）。
-- `networks: sks-net` 从 `driver: bridge`（本地建）改成 `external: true`。
-- pg 仍由原仓 compose 管，在 `sks-net` 上 → sks-ai 经 `DATABASE_URL=...@postgres:5432/...` 连上。
+- **sks-ai 独立发版**：sks-ai 仓 git tag v1.2 → CI build 推 `ghcr.io/.../sks-ai:v1.2`。
+- **sks-ai 独立部署**：deploy 仓改 `sks-ai.image` 的 tag（或用 `:latest` + `docker compose pull sks-ai`）→ `docker compose up -d sks-ai` 只拉新镜像只重启 sks-ai，不碰 sks-server/pg/nginx。sks-server 同理。
+- **本地调试不受影响**：Java 用 IDEA、Python 用 PyCharm/`uv run uvicorn`、前端 `npm run dev`，全在宿主进程跑，不依赖 compose。compose 是部署用。
 
-### 5.4 本地调试不受影响
+### 5.4 启动顺序（必须钉死，见 §8 风险）
 
-本地调试走 PyCharm/终端 `uv run uvicorn`（宿主 8000）或 IDEA Java（宿主 8080），不依赖 compose 网络。compose 是部署用，本地 dev 用各自的进程。`expose` 不发宿主不影响本地调试（本地根本不用 compose 跑 sks-ai）。
-
-### 5.5 启动顺序（必须钉死，见 §8 风险）
-
-checkpointer 只在启动时初始化一次、无懒重试（不同于 asyncpg 池）。若 sks-ai 先于 pg 起来，interview 端点会一直坏，而 `/health` 显示 UP、`restart: unless-stopped` 不救（进程没死）。README 必须钉死：**先起原仓 compose（pg + sks-server），后起 sks-ai compose**。
+`depends_on: [postgres]` 保证 sks-server/sks-ai 等 pg 健康后才起（单 compose 内 dependency 成立）。但若手动分批起，README 钉死：**先 postgres，后 sks-server/sks-ai，最后 nginx**。checkpointer 无懒重试的风险见 §8。
 
 ## 6. 文档归属
 
 | 文档 | 去向 |
 |---|---|
-| `随口说PRD .md`、tech-design、MVP plan、`deploy/OPS.md`、`GO_LIVE_CHECKLIST.md`、学习文档 | 留原仓 |
-| `docs/API_CONTRACT.md` | 新建到 sks-ai 仓 |
-| `README.md`（sks-ai 新仓）| 怎么本地跑（`uv sync`/`uv run uvicorn`）、docker 跑、`DATABASE_URL`/`.env` 契约、健康检查、**启动顺序（先原仓 compose 后 sks-ai，见 §5.5）** |
-| `CLAUDE.md`（原仓）| 架构图把 sks-ai 改成「独立仓，HTTP+X-Service-Token 跨仓调用」；删/改「Python packages」节；build commands 删 sks-ai 命令 |
-| `deploy/GO_LIVE_CHECKLIST.md`（原仓）| 点名改「4 容器全 healthy」为「原仓 3 容器（postgres/sks-server/nginx）healthy + sks-ai 独立 compose 在 `sks-net` 上 healthy」，泛泛「更新」易漏 |
+| `随口说PRD .md`、tech-design、MVP plan、`deploy/OPS.md`、`GO_LIVE_CHECKLIST.md`、学习文档、本 spec | **deploy 仓** |
+| `docs/API_CONTRACT.md` | **sks-ai 仓**（服务提供方拥有）|
+| `README.md`（sks-ai 仓）| 怎么本地跑（`uv sync`/`uv run uvicorn`）、镜像构建、`DATABASE_URL`/`.env` 契约、健康检查 |
+| `README.md`（sks-server 仓）| 怎么本地跑（`./mvnw spring-boot:run` + `application-local.yml`/local profile）、镜像构建 |
+| `README.md`（deploy 仓）| 如何用本仓部署全栈（`docker network` 不需要、`compose up` + `.env` 配置 + 启动顺序 §5.4 + 镜像 tag 更新流程）|
+| `CLAUDE.md`（deploy 仓）| 架构图改成三仓：sks-server 仓 + sks-ai 仓（各自镜像发版）+ deploy 仓（compose 编排）；Java↔Python 跨仓 HTTP+X-Service-Token；删「Python packages」节、build commands 分仓 |
+| `deploy/GO_LIVE_CHECKLIST.md`（deploy 仓）| 点名改「4 容器全 healthy」为「4 容器（postgres/sks-server/sks-ai/nginx）全 healthy，其中 sks-server/sks-ai 为 GHCR 镜像」 |
 
 **API_CONTRACT.md 两个契约面**：
 
 1. **HTTP 端点契约**：`/ai/*` 端点形状、`X-Service-Token`/`X-Request-Id` 头、请求/响应体、§5.3 超时链（Python LLM 120s×≤2 ≈ 250s < Java AiClient 270s < nginx 300s）。从现有 `AiClient.java` 注释 + pydantic models 抽取。拆仓后 Java record 与 Python model 字段漂移是第一类腐化风险，此文档是字段契约真相。
 
-2. **共享表契约**（更隐蔽，必须单列一节）：sks-ai 直接读写 `kb_card`、`analyze_task`（外加自建 LangGraph 检查点表 `checkpoint_*`）。这些表的 schema 由**原仓 Flyway 拥有**——拆仓后这是第二类契约面。该节列：
+2. **共享表契约**（更隐蔽，必须单列一节）：sks-ai 直接读写 `kb_card`、`analyze_task`（外加自建 LangGraph 检查点表 `checkpoint_*`）。这些表的 schema 由**deploy 仓 Flyway 拥有**（sks-server 仓的迁移经 deploy compose 执行）——拆仓后这是第二类契约面。该节列：
    - sks-ai 依赖的表/列清单 + 语义（如 `analyze_task.progress`「已完成条数比例」语义、`kb_card.embedding` 固定 `vector(1024)` 维——之前专门钉死过的口径）。
-   - 声明 schema 归属：**新仓不做迁移**，部署依赖原仓迁移已执行到 V≥N（当前 V3）。
-   - LangGraph `checkpoint_*` 表是例外（sks-ai 自己 `setup()` 建，归新仓管）。
+   - 声明 schema 归属：**sks-ai/sks-server 仓不做迁移**，部署依赖 deploy 仓 compose 启动时 Flyway 已执行到 V≥N（当前 V3）。
+   - LangGraph `checkpoint_*` 表是例外（sks-ai 自己 `setup()` 建，归 sks-ai 仓管）。
 
 ## 7. 迁移步骤
 
-### 7.1 抽离 sks-ai 到新仓库（带历史）
+### 7.1 抽离 sks-server 与 sks-ai 到独立仓库（带历史）
 ```bash
 cd /Users/rick/work/sks-agent
+
+# 抽 sks-ai
 git subtree split --prefix=sks-ai -b split-sks-ai
 mkdir /Users/rick/work/sks-ai && cd /Users/rick/work/sks-ai
-git init
-git pull /Users/rick/work/sks-agent split-sks-ai
-# （--allow-unrelated-histories 对空仓 pull 是多余的，删掉无害）
+git init && git pull /Users/rick/work/sks-agent split-sks-ai
+
+# 抽 sks-server
+cd /Users/rick/work/sks-agent
+git subtree split --prefix=sks-server -b split-sks-server
+mkdir /Users/rick/work/sks-server && cd /Users/rick/work/sks-server
+git init && git pull /Users/rick/work/sks-agent split-sks-server
 ```
 
-### 7.2 给新仓补独立部署 artifact + 清理 config.py
-在 sks-ai 新仓根加：`docker-compose.yml`（§5）、`.env.example`、`.gitignore`、`README.md`、`docs/API_CONTRACT.md`。
-同时清理 `app/config.py`：删 `ALIYUN_SMS_SIGN` 字段（Python 无一处用，§4）。逐个 commit。
+### 7.2 给两服务仓补 CI + 文档
+- sks-ai 仓：加 `.github/workflows/ci.yml`（build+push 镜像到 GHCR）、`.env.example`（精简，本地 dev 参考）、`.gitignore`、`README.md`、`docs/API_CONTRACT.md`；清理 `app/config.py` 删 `ALIYUN_SMS_SIGN`。
+- sks-server 仓：加 `.github/workflows/ci.yml`、`.env.example`（精简）、`.gitignore`、`README.md`（含 `application-local.yml` + local profile 的本地调试说明，见既有记忆 `local-idea-run-java-env`）。
+- 各仓逐个 commit。
 
-### 7.3 建 GitHub 远程 + push
+### 7.3 建两 GitHub 远程 + push
 ```bash
+# sks-ai
+cd /Users/rick/work/sks-ai
 git remote add origin git@github.com:WangBuer1984/sks-ai.git
-git branch -M main
-git push -u origin main
+git branch -M main && git push -u origin main
+# sks-server
+cd /Users/rick/work/sks-server
+git remote add origin git@github.com:WangBuer1984/sks-server.git
+git branch -M main && git push -u origin main
 ```
+触发 CI build 镜像到 GHCR（默认 `GITHUB_TOKEN` 即可推本仓命名空间，workflow 需配 `packages: write` 权限，见 §8）。
 
-### 7.4 原仓库清理 sks-ai + 改 external 网络
+### 7.4 原仓库改造为 deploy 仓
 ```bash
 cd /Users/rick/work/sks-agent
-git rm -r sks-ai
-# 编辑 docker-compose.yml：删 sks-ai 服务块；networks.sks-net 从 driver:bridge 改 external:true
-# 编辑 CLAUDE.md / docs：更新 sks-ai 描述（点名 GO_LIVE_CHECKLIST「4 容器」改「3 容器+sks-ai 独立 compose」）
-# 编辑 .env.example：删 sks-ai 专用 key（ZHIPU/TIKHUB/ALIYUN_ASR_*），保留共享 key
-# 注：config.py 的 ALIYUN_SMS_SIGN 清理在新仓（7.2 已做），原仓无 config.py
-git commit -m "chore: 拆出 sks-ai 为独立仓库（见 sks-ai 仓 API_CONTRACT）"
+git rm -r sks-ai sks-server
+# 编辑 docker-compose.yml：sks-server/sks-ai 改 image: ghcr.io/.../<svc>:latest（不再 build: ./sks-x）
+# 编辑 .env.example：补全为单份全量（§4）
+# 编辑 CLAUDE.md：三仓架构说明
+# 编辑 deploy/GO_LIVE_CHECKLIST.md：「4 容器」描述更新（§6）
+# 可选：GitHub 仓库名改 sks-agent-deploy
+git commit -m "chore: 三仓拆分——本仓变为 deploy 仓（sks-server/sks-ai 见各自仓 + GHCR 镜像）"
 git push
-```
-
-### 7.4.1 部署前置（写进两边 README / deploy 文档）
-```bash
-docker network create sks-net   # 一次性，每台部署机执行一次
-# 然后起原仓 compose（pg + sks-server + nginx），再起 sks-ai compose（顺序见 §5.5）
 ```
 
 ### 7.5 清理临时分支
 ```bash
-cd /Users/rick/work/sks-agent && git branch -D split-sks-ai
+cd /Users/rick/work/sks-agent && git branch -D split-sks-ai split-sks-server
 ```
 
 ## 8. 风险与回滚
 
-- **不可逆但可恢复**：原仓 `git rm -r sks-ai` 后，历史里 sks-ai 仍在（`git log -- sks-ai/` 可查、可 `git revert` 或从历史 checkout）。新仓有完整历史。拆错能从 git 恢复，不丢代码。
-- **执行顺序**：先抽新仓并 push 成功（7.1-7.3），再动原仓（7.4）。抽离出问题时原仓未动，安全。
-- **.env 真值不进 git**：两边 `.env` 都 gitignored，共享密钥靠手动从原仓 `.env` 抄到新仓 `.env`。
-- **跨仓契约漂移**：`SERVICE_TOKEN`/pg 凭据/`ALIYUN_ACCESS_KEY_*` 轮换需两边同步，靠 README「跨仓契约」约束。`AiClient` record 与 pydantic model 字段变更 + 共享表 schema 变更靠 `docs/API_CONTRACT.md` 两个契约面约束。
-- **启动顺序（被 §5 兜底说轻了，单列风险）**：`/health 仍 UP` 兜底**只覆盖 asyncpg 池**（有懒重试）。`checkpointer`（`_init_checkpointer`）只在启动时初始化一次、无懒重试。若 sks-ai 先于 pg 起来，interview 端点会一直坏，而 `/health` 显示 UP、`restart: unless-stopped` 不救（进程没死）。**缓解**：README 钉死启动顺序（先原仓 compose 后 sks-ai）；给 checkpointer 补懒重试标为 out-of-scope（本次不做，但风险写明，别让「/health 仍 UP」读起来像全兜住了）。
+- **不可逆但可恢复**：原仓 `git rm -r sks-ai sks-server` 后，历史里仍在（`git log -- sks-ai/` 可查、可 `git revert` 或从历史 checkout）。两新仓有完整历史。拆错能从 git 恢复，不丢代码。
+- **执行顺序**：先抽两新仓并 push 成功（7.1-7.3），再动原仓（7.4）。抽离出问题时原仓未动，安全。
+- **.env 真值不进 git**：deploy 仓 `.env` gitignored；服务仓 `.env`（本地 dev）也 gitignored。运行时 deploy 仓 `.env` 是唯一真值源。
+- **跨仓契约漂移**：`AiClient` record（sks-server 仓）与 pydantic model（sks-ai 仓）字段变更 + 共享表 schema 变更（deploy 仓 Flyway）靠 `docs/API_CONTRACT.md`（sks-ai 仓）两个契约面约束。镜像方案下 `.env` 单份，无跨仓密钥同步负担。
+- **启动顺序（单列风险）**：`/health 仍 UP` 兜底**只覆盖 asyncpg 池**（有懒重试）。`checkpointer`（`_init_checkpointer`）只在启动时初始化一次、无懒重试。单 compose 有 `depends_on: [postgres]` 保证 pg 先健康，缓解；但若手动分批起，interview 端点会一直坏，`/health` 显示 UP、`restart: unless-stopped` 不救（进程没死）。**缓解**：README 钉死启动顺序；给 checkpointer 补懒重试标为 out-of-scope（本次不做，但风险写明，别让「/health 仍 UP」读起来像全兜住了）。
+- **镜像 tag 漂移**：deploy 仓 compose 用 `:latest` 方便但有"本地缓存不更新"风险，生产建议钉具体 tag。CI 首次推 GHCR 需 GitHub Actions 有写 ghcr.io 权限（默认 GITHUB_TOKEN 即可推本仓命名空间）。
 
 ## 9. 不在本次范围
 
-- 不拆 sks-web（前端仍留原仓）。
-- 不改 sks-server 的 AiClient 逻辑（只更新文档指向 sks-ai 仓）。
-- 不引入镜像 registry / CI（方案 A 不需要；后续要全栈单 compose 编排可再上方案 B）。
-- 不拆 Postgres（保留共享单库）。
+- 不拆 sks-web（前端仍留 deploy 仓，nginx 镜像 build 时用其 dist）。
+- 不改 sks-server 的 AiClient 逻辑、不改 sks-ai 的端点逻辑（只搬+文档化契约）。
+- 不拆 Postgres（保留共享单库，deploy 仓 compose 管）。
+- 不补 checkpointer 懒重试（标 out-of-scope，风险写进 §8）。
+- 不做 deploy 仓的自动化 tag→镜像更新（手动 bump compose 里 image tag；后续可加 Renovate/watch 之类自动化）。
