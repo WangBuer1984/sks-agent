@@ -37,6 +37,8 @@ sks-server/
 ├── .github/workflows/ci.yml  ← 新增：test → build → push 镜像到 GHCR
 ├── .env.example              ← 新增：本地 dev 用（运行时由 deploy 仓 compose 注入，此文件仅本地跑参考）
 ├── .gitignore
+├── .dockerignore             ← 新增：护栏（.env、.git），防密钥打进镜像（见下文 Dockerfile 白名单说明）
+├── CLAUDE.md                 ← 新增：scoped，承载 sks-server 硬不变量 + 本仓构建/测试命令（§6）
 └── README.md                 ← 新增：本地跑 + 镜像构建说明
 ```
 独立发版：git tag → CI `./mvnw test` 绿 → build `ghcr.io/wangbuer1984/sks-server:<tag>` → push。
@@ -47,22 +49,28 @@ sks-server/
 ```
 sks-ai/
 ├── app/, tests/              ← 原样
-├── Dockerfile, pyproject.toml, uv.lock  ← 原样
+├── Dockerfile, pyproject.toml, uv.lock  ← Dockerfile 改（见下 uv.lock frozen）
 ├── .github/workflows/ci.yml  ← 新增：test → build → push 镜像到 GHCR
 ├── .env.example              ← 新增：本地 dev 用（同上，运行时由 deploy 仓注入）
 ├── .gitignore
+├── .dockerignore             ← 新增：护栏（.env、.git），防密钥打进镜像（见下 Dockerfile 白名单说明）
+├── CLAUDE.md                 ← 新增：scoped，承载 sks-ai 硬不变量 + 本仓构建/测试命令（§6）
 ├── README.md                 ← 新增：本地跑 + 镜像构建
 └── docs/
     └── API_CONTRACT.md       ← 新增：/ai/* 端点契约 + 共享表契约（sks-ai 是服务提供方，契约归它拥有）
 ```
 独立发版：git tag → CI `uv run pytest`（带 dev 依赖）绿 → build `ghcr.io/wangbuer1984/sks-ai:<tag>`（Dockerfile `uv sync --no-dev` 不含 pytest，故测试在 CI 前置 gate 跑）→ push。
-清理：`app/config.py` 删 `ALIYUN_SMS_SIGN` 字段（Python 无一处用，§4）。
+清理（两处，和删 ALIYUN_SMS_SIGN 同级，不碰业务代码）：
+- `app/config.py` 删 `ALIYUN_SMS_SIGN` 字段（Python 无一处用，§4）。
+- **`Dockerfile` 加 `COPY uv.lock ./` + `uv sync --no-dev --frozen`**——原 Dockerfile 只 COPY pyproject.toml，镜像里装的是构建当天重新解析的版本，和 CI `uv run pytest`（按 uv.lock）验的锁定版本可能不一致（假绿）。加 --frozen 后镜像严格按 lock 装，gate 才真。
+
+> **.dockerignore 护栏说明**：两个 Dockerfile 都是白名单式 COPY（sks-ai 只 COPY pyproject.toml+app，sks-server 只 COPY .mvn/mvnw/pom.xml/src），`.env` 不会进镜像，现状安全。但拆分后服务仓根放了 `.env`（本地 dev 用，在 build context 内），加一个两行 `.dockerignore`（`.env`、`.git`）当护栏成本极低——将来谁把 Dockerfile 改成 `COPY . .` 就不会踩雷。
 
 ### 3.3 `sks-agent-deploy` 仓（部署/编排/前端/文档）
 
 ```
 sks-agent-deploy/
-├── docker-compose.yml        ← 改：sks-server/sks-ai 按镜像引用，postgres/nginx 本地 build
+├── docker-compose.yml        ← 改：sks-server/sks-ai 按镜像引用，nginx 本地 build，postgres 用官方镜像
 ├── .env.example              ← 单份 env 契约（运行时 .env 住这里）
 ├── sks-web/                  ← 前端原样（nginx 镜像 build 时用其 dist）
 ├── deploy/
@@ -146,12 +154,17 @@ services:
     depends_on:
       sks-server: { condition: service_healthy }   # 等 sks-server 健康（/api/health UP = Spring Boot 已起 = Flyway 已跑完，保证 kb_card/analyze_task 表已建）
     expose: ["8000"]
+    # ⚠️ 同现状必须保留 healthcheck（python urllib 探 /health）——§6 验收要「4 容器全 healthy」，
+    #   丢了 sks-ai 永远停在 running 而非 healthy，验收过不了。
+    # ...（healthcheck 同现状）
 
   nginx:
-    build: { context: ., dockerfile: deploy/nginx/Dockerfile }   # 仍本地 build（含前端 dist，需 sks-web/ + deploy/nginx/）
+    build: { context: ., dockerfile: deploy/nginx/Dockerfile }   # 本地 build（含前端 dist，需 sks-web/ + deploy/nginx/）
     ports: ["80:80"]
     depends_on:
       sks-server: { condition: service_healthy }   # 同现状：等 Java 起完再反代，数组简写只等启动会 502
+    # ⚠️ 同现状必须保留 healthcheck（wget --spider）——同上，§6 验收要 4 容器全 healthy。
+    # ...（healthcheck 同现状）
 ```
 
 ### 5.3 独立部署怎么操作（镜像 tag 策略）
@@ -207,6 +220,8 @@ compose dependency 链：`postgres` → `sks-server`(depends postgres, Flyway �
 ## 7. 迁移步骤
 
 ### 7.1 抽离 sks-server 与 sks-ai 到独立仓库（带历史）
+> 前置：`subtree split` 只带**已提交**的历史，两子目录里任何未提交改动不会跟到新仓。split 前先 `git status` 确认干净（当前仓库有未提交的 `.claude/settings.local.json`，虽在两目录之外，但 split 前务必确认两子目录无未提交改动，防真丢东西）。
+
 ```bash
 cd /Users/rick/work/sks-agent
 
@@ -229,10 +244,10 @@ git init && git pull /Users/rick/work/sks-agent split-sks-server
 - **platforms**：固定 `linux/amd64`（服务器是 amd64）；README 注明镜像只保证 amd64。Mac arm64 本地 `compose up` 拉 amd64 走模拟（能跑但慢），与 §5.3「本地调试走宿主进程不用 compose」自洽。
 - **权限**：`packages: write`（推 GHCR 本仓命名空间）。
 
-**sks-ai 仓**：加 `.github/workflows/ci.yml`（`uv run pytest` 带 dev 依赖 → 绿 → `docker build` → push GHCR）、`.env.example`、`.gitignore`、`README.md`、`docs/API_CONTRACT.md`；清理 `app/config.py` 删 `ALIYUN_SMS_SIGN`。
+**sks-ai 仓**：加 `.github/workflows/ci.yml`（`uv run pytest` 带 dev 依赖 → 绿 → `docker build` → push GHCR）、`.env.example`、`.gitignore`、`.dockerignore`（.env/.git 护栏）、`CLAUDE.md`（scoped，§6）、`README.md`、`docs/API_CONTRACT.md`；清理 `app/config.py` 删 `ALIYUN_SMS_SIGN` + Dockerfile 加 `COPY uv.lock` + `--frozen`（§3.2 假绿修复）。
 - ⚠️ **Python CI 留意**：`tests/test_retrieve.py`、`test_account_analyze.py`、`test_video_analyze.py` 可能引 asyncpg/DATABASE_URL。实现期先确认是否全 mock；若有跑真库的用例，workflow 需加 `services: postgres`（pgvector 镜像）。
 
-**sks-server 仓**：加 `.github/workflows/ci.yml`（`./mvnw test` → 绿 → `docker build` → push GHCR）、`.env.example`、`.gitignore`、`README.md`（含 `application-local.yml` + local profile 的本地调试说明，见既有记忆 `local-idea-run-java-env`；**spring.config.import 用相对路径 `optional:file:.env[.properties]` + 工作目录=仓库根，别写死老 monorepo 绝对路径**）。
+**sks-server 仓**：加 `.github/workflows/ci.yml`（`./mvnw test` → 绿 → `docker build` → push GHCR）、`.env.example`、`.gitignore`、`.dockerignore`（.env/.git 护栏）、`CLAUDE.md`（scoped，§6）、`README.md`（含 `application-local.yml` + local profile 的本地调试说明，见既有记忆 `local-idea-run-java-env`；**spring.config.import 用相对路径 `optional:file:.env[.properties]` + 工作目录=仓库根，别写死老 monorepo 绝对路径**）。
 - ⚠️ **Java CI 留意**：Testcontainers 在 ubuntu runner 上可行；`actions/setup-java` 带 `cache: maven` 免得每次全量拉依赖。
 
 各仓逐个 commit。
@@ -276,8 +291,8 @@ git push
 ### 7.4.1 部署运行（写进 deploy 仓 README）
 ```bash
 # 无需 docker network create（单 compose 单默认网络）
-docker compose pull          # 拉两服务镜像
-docker compose up -d        # 按 depends_on 顺序起：pg → sks-server(Flyway) → sks-ai → nginx
+docker compose pull --ignore-buildable   # 拉两服务镜像；nginx 只有 build: 无 image:，--ignore-buildable 跳过它（up -d 仍自动 build nginx）
+docker compose up -d                    # 按 depends_on 顺序起：pg → sks-server(Flyway) → sks-ai → nginx
 ```
 
 ### 7.5 清理临时分支
