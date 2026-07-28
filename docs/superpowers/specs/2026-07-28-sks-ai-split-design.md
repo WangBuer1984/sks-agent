@@ -103,6 +103,8 @@ sks-server / sks-ai 仓各放一份**精简** `.env.example`，只列自己 dev 
 
 **`ALIYUN_SMS_SIGN` 清理**：Python `config.py` 声明了它但全代码库无一处使用（SMS 是 Java 的事）。拆分时从 `config.py` 字段 + deploy 仓 compose `sks-ai` 块 `environment` 传参里一并删除。
 
+> **TODO（不阻塞，现状非回归）**：单 `.env` 全量 `env_file` 注入两容器，意味着 sks-ai 容器也能读到 `JWT_SECRET_*`/`ADMIN_SEED_PASSWORD`/`SPRING_MAIL_PASSWORD`（爆炸半径）。这是当前 monorepo 就有的现状，不算拆分引入。后续要收紧可分 per-service env 文件，但别为它牺牲「单份 env」的简化。
+
 ## 5. 网络 + deploy 仓的镜像化 docker-compose.yml
 
 ### 5.1 网络（单 compose 单网络，无 external 舞蹈）
@@ -115,7 +117,10 @@ deploy 仓**单 compose 管四服务**（postgres / sks-server / sks-ai / nginx�
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    # ...（同现状，env 建库）
+    # ⚠️ 同现状必须保留：environment(POSTGRES_DB/USER/PASSWORD)、
+    #   volumes: sks-pgdata:/var/lib/postgresql/data、healthcheck(pg_isready)。
+    #   pg healthcheck 是整条 depends_on service_healthy 链的前提，丢了退化成"只等启动"。
+    # ...（env 建库 + volumes + healthcheck，同现状）
 
   sks-server:
     image: ghcr.io/wangbuer1984/sks-server:<tag>   # 按镜像引用，不 build（§5.3：钉具体 tag，不用 :latest）
@@ -143,9 +148,10 @@ services:
     expose: ["8000"]
 
   nginx:
-    build: { context: ., dockerfile: deploy/nginx/Dockerfile }   # 仍本地 build（含前端 dist）
+    build: { context: ., dockerfile: deploy/nginx/Dockerfile }   # 仍本地 build（含前端 dist，需 sks-web/ + deploy/nginx/）
     ports: ["80:80"]
-    depends_on: [sks-server]
+    depends_on:
+      sks-server: { condition: service_healthy }   # 同现状：等 Java 起完再反代，数组简写只等启动会 502
 ```
 
 ### 5.3 独立部署怎么操作（镜像 tag 策略）
@@ -163,13 +169,30 @@ compose dependency 链：`postgres` → `sks-server`(depends postgres, Flyway �
 
 | 文档 | 去向 |
 |---|---|
-| `随口说PRD .md`、tech-design、MVP plan、`deploy/OPS.md`、`GO_LIVE_CHECKLIST.md`、学习文档、本 spec | **deploy 仓** |
+| `随口说PRD .md`、tech-design、MVP plan、学习文档、本 spec | **deploy 仓**（顶部各加注「路径按拆分前 monorepo 布局，现分属两服务仓」，不逐条改写历史路径）|
+| `deploy/OPS.md`、`GO_LIVE_CHECKLIST.md` | **deploy 仓**，且需**改写 --build 流程**（见下文「--build 心智模型改写」）|
 | `docs/API_CONTRACT.md` | **sks-ai 仓**（服务提供方拥有）|
-| `README.md`（sks-ai 仓）| 怎么本地跑（`uv sync`/`uv run uvicorn`）、镜像构建、`DATABASE_URL`/`.env` 契约、健康检查 |
-| `README.md`（sks-server 仓）| 怎么本地跑（`./mvnw spring-boot:run` + `application-local.yml`/local profile）、镜像构建 |
-| `README.md`（deploy 仓）| 如何用本仓部署全栈（`docker network` 不需要、`compose up` + `.env` 配置 + 启动顺序 §5.4 + 镜像 tag 更新流程）|
-| `CLAUDE.md`（deploy 仓）| 架构图改成三仓：sks-server 仓 + sks-ai 仓（各自镜像发版）+ deploy 仓（compose 编排）；Java↔Python 跨仓 HTTP+X-Service-Token；删「Python packages」节、build commands 分仓 |
-| `deploy/GO_LIVE_CHECKLIST.md`（deploy 仓）| 点名改「4 容器全 healthy」为「4 容器（postgres/sks-server/sks-ai/nginx）全 healthy，其中 sks-server/sks-ai 为 GHCR 镜像」 |
+| `README.md`（sks-ai 仓）| 怎么本地跑（`uv sync`/`uv run uvicorn`）、镜像构建、`DATABASE_URL`/`.env` 契约、健康检查、镜像只保证 linux/amd64 |
+| `README.md`（sks-server 仓）| 怎么本地跑（`./mvnw spring-boot:run` + `application-local.yml`/local profile）、镜像构建、镜像只保证 linux/amd64 |
+| `README.md`（deploy 仓）| 如何用本仓部署全栈（`compose up` + `.env` 配置 + 启动顺序 §5.4 + 镜像 tag 更新流程 + `docker login ghcr.io`）|
+| `CLAUDE.md`（deploy 仓）| 改成**三仓总览**：架构图（三仓 + GHCR 镜像 + compose 编排）、Java↔Python 跨仓 HTTP+X-Service-Token、指向两服务仓的 scoped CLAUDE.md；删「Python packages」节、build commands 分仓 |
+| `CLAUDE.md`（**sks-server 仓，新增 scoped**）| **承载约束 sks-server 代码的硬不变量**：信用事务边界（扣额度原子条件更新 + 退款幂等 via credit_ledger）/ admin 隔离（独立 admin_user + 独立 SecurityFilterChain + 不同 JWT secret）/ Testcontainers pgvector:pg16 非 H2 / 复盘状态机无 AI 判态 / Java 唯一公网入口 / 不用 Redis/MQ |
+| `CLAUDE.md`（**sks-ai 仓，新增 scoped**）| **承载约束 sks-ai 代码的硬不变量**：无流式输出 + 先审后返（生成完→内容安全→返回 JSON）/ GLM 单厂商 + 型号只在 llm/ + embedding 1024 维绑 vector(1024) 列 / 不做迁移（checkpointer 例外，sks-ai 自己 setup）/ UGC 过内容安全审 / Python 不暴露公网只信 X-Service-Token |
+| `deploy/GO_LIVE_CHECKLIST.md`（deploy 仓）| 点名改「4 容器全 healthy」为「4 容器（postgres/sks-server/sks-ai/nginx）全 healthy，其中 sks-server/sks-ai 为 GHCR 镜像」|
+
+> **CLAUDE.md 分仓的必要性**：CLAUDE.md 承载的硬不变量恰恰约束两个服务仓代码。拆完之后，在 sks-server 或 sks-ai 仓里干活的 agent 读不到任何 CLAUDE.md，这些约束当场失效——而这两个仓恰恰是唯一会写业务代码的地方。所以两服务仓各放一份 scoped CLAUDE.md，deploy 仓那份改成总览 + 指向。
+
+### --build 心智模型改写（运维文档重点改造）
+
+镜像化后，`docker compose up -d --build` 的语义变了（两服务仓不 build 了）。OPS.md（4 处）/ GO_LIVE_CHECKLIST.md（2 处）现有的 `--build` 指引要改写为新流程：
+
+| 场景 | 旧（monorepo） | 新（镜像化） |
+|---|---|---|
+| 新增 Flyway 迁移生效 | `up -d --build sks-server` | sks-server 仓发新 tag → CI 出镜像 → deploy 仓 bump `sks-server.image` tag → `compose pull sks-server && compose up -d sks-server` |
+| 重建/首次起栈 | `up -d --build` | `compose pull`（拉两镜像）→ `compose up -d` |
+| 回滚部署 | `rebuild` 旧代码 | deploy 仓把 `sks-server.image` tag 改回上一版 → `pull && up -d`（比 build 快且确定，镜像化收益） |
+
+§7.4 改造清单必须显式列入 OPS.md 这几段，不能只点「4 容器 healthy」。
 
 **API_CONTRACT.md 两个契约面**：
 
@@ -200,9 +223,19 @@ git init && git pull /Users/rick/work/sks-agent split-sks-server
 ```
 
 ### 7.2 给两服务仓补 CI（test→build→push）+ 文档
-- sks-ai 仓：加 `.github/workflows/ci.yml`（`uv run pytest` 带 dev 依赖 → 绿 → `docker build` → push GHCR；workflow 配 `packages: write`）、`.env.example`（精简，本地 dev 参考）、`.gitignore`、`README.md`、`docs/API_CONTRACT.md`；清理 `app/config.py` 删 `ALIYUN_SMS_SIGN`。
-- sks-server 仓：加 `.github/workflows/ci.yml`（`./mvnw test` → 绿 → `docker build` → push GHCR）、`.env.example`（精简）、`.gitignore`、`README.md`（含 `application-local.yml` + local profile 的本地调试说明，见既有记忆 `local-idea-run-java-env`；**注意 spring.config.import 用相对路径 `optional:file:.env[.properties]` + 工作目录=仓库根，别写死老 monorepo 绝对路径**）。
-- 各仓逐个 commit。
+
+**CI 公共参数**（两仓 workflow 都要）：
+- **trigger**：`on: push: tags: ['v*']` 才 build+push（tag 名 = 镜像 tag，取 `github.ref_name`）；`push: branches: [main]` 与 `pull_request` 只跑 test（不推镜像）——否则「git tag → CI」落到 workflow 里没有依据。
+- **platforms**：固定 `linux/amd64`（服务器是 amd64）；README 注明镜像只保证 amd64。Mac arm64 本地 `compose up` 拉 amd64 走模拟（能跑但慢），与 §5.3「本地调试走宿主进程不用 compose」自洽。
+- **权限**：`packages: write`（推 GHCR 本仓命名空间）。
+
+**sks-ai 仓**：加 `.github/workflows/ci.yml`（`uv run pytest` 带 dev 依赖 → 绿 → `docker build` → push GHCR）、`.env.example`、`.gitignore`、`README.md`、`docs/API_CONTRACT.md`；清理 `app/config.py` 删 `ALIYUN_SMS_SIGN`。
+- ⚠️ **Python CI 留意**：`tests/test_retrieve.py`、`test_account_analyze.py`、`test_video_analyze.py` 可能引 asyncpg/DATABASE_URL。实现期先确认是否全 mock；若有跑真库的用例，workflow 需加 `services: postgres`（pgvector 镜像）。
+
+**sks-server 仓**：加 `.github/workflows/ci.yml`（`./mvnw test` → 绿 → `docker build` → push GHCR）、`.env.example`、`.gitignore`、`README.md`（含 `application-local.yml` + local profile 的本地调试说明，见既有记忆 `local-idea-run-java-env`；**spring.config.import 用相对路径 `optional:file:.env[.properties]` + 工作目录=仓库根，别写死老 monorepo 绝对路径**）。
+- ⚠️ **Java CI 留意**：Testcontainers 在 ubuntu runner 上可行；`actions/setup-java` 带 `cache: maven` 免得每次全量拉依赖。
+
+各仓逐个 commit。
 
 ### 7.3 建两 GitHub 远程 + push
 ```bash
@@ -217,8 +250,11 @@ git branch -M main && git push -u origin main
 ```
 触发 CI build 镜像到 GHCR（默认 `GITHUB_TOKEN` 即可推本仓命名空间，workflow 需配 `packages: write` 权限，见 §8）。
 
-### 7.4 原仓库改造为 deploy 仓（**必须等 7.3 镜像 published 后**）
-> gate：先确认两服务仓 CI green、`ghcr.io/wangbuer1984/sks-server:<tag>` 与 `sks-ai:<tag>` 已 published（`docker pull` 能拉到），再做本步——否则 deploy compose `up` 会 pull 失败。
+### 7.4 原仓库改造为 deploy 仓（**必须等 7.3 镜像 published 且可拉取后**）
+> gate（三步都过才动原仓）：
+> 1. 两服务仓 CI green、镜像 published（GitHub → Packages 页可见 `ghcr.io/wangbuer1984/sks-server:<tag>` 与 `sks-ai:<tag>`）。
+> 2. **GHCR package 默认 private**（与仓库可见性独立）：要么部署机 `docker login ghcr.io`（PAT 带 `read:packages`）后 `docker pull ghcr.io/wangbuer1984/sks-server:<tag>` 成功；要么在 GitHub Packages 页显式把两 package 设为 public。**不验证此步，首次 `compose pull` 必 401。**
+> 3. 原仓 `git rm` 已确认要删两目录（见 §8 回滚）。
 
 ```bash
 cd /Users/rick/work/sks-agent
