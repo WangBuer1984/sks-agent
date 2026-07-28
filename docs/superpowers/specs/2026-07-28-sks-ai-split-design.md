@@ -34,12 +34,13 @@ sks-server/
 ├── src/                      ← 原样
 ├── Dockerfile                ← 原样
 ├── pom.xml, mvnw, .mvn/      ← 原样
-├── .github/workflows/ci.yml  ← 新增：build + push 镜像到 GHCR
+├── .github/workflows/ci.yml  ← 新增：test → build → push 镜像到 GHCR
 ├── .env.example              ← 新增：本地 dev 用（运行时由 deploy 仓 compose 注入，此文件仅本地跑参考）
 ├── .gitignore
 └── README.md                 ← 新增：本地跑 + 镜像构建说明
 ```
-独立发版：git tag → CI build `ghcr.io/wangbuer1984/sks-server:<tag>`。
+独立发版：git tag → CI `./mvnw test` 绿 → build `ghcr.io/wangbuer1984/sks-server:<tag>` → push。
+镜像构建用 `-DskipTests`（Dockerfile 已是），测试在 CI 前置 gate 跑。
 
 ### 3.2 `sks-ai` 仓（Python 服务）
 
@@ -47,14 +48,14 @@ sks-server/
 sks-ai/
 ├── app/, tests/              ← 原样
 ├── Dockerfile, pyproject.toml, uv.lock  ← 原样
-├── .github/workflows/ci.yml  ← 新增：build + push 镜像到 GHCR
+├── .github/workflows/ci.yml  ← 新增：test → build → push 镜像到 GHCR
 ├── .env.example              ← 新增：本地 dev 用（同上，运行时由 deploy 仓注入）
 ├── .gitignore
 ├── README.md                 ← 新增：本地跑 + 镜像构建
 └── docs/
     └── API_CONTRACT.md       ← 新增：/ai/* 端点契约 + 共享表契约（sks-ai 是服务提供方，契约归它拥有）
 ```
-独立发版：git tag → CI build `ghcr.io/wangbuer1984/sks-ai:<tag>`。
+独立发版：git tag → CI `uv run pytest`（带 dev 依赖）绿 → build `ghcr.io/wangbuer1984/sks-ai:<tag>`（Dockerfile `uv sync --no-dev` 不含 pytest，故测试在 CI 前置 gate 跑）→ push。
 清理：`app/config.py` 删 `ALIYUN_SMS_SIGN` 字段（Python 无一处用，§4）。
 
 ### 3.3 `sks-agent-deploy` 仓（部署/编排/前端/文档）
@@ -130,7 +131,8 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-    depends_on: [postgres]
+    depends_on:
+      sks-server: { condition: service_healthy }   # 等 sks-server 健康（/api/health UP = Spring Boot 已起 = Flyway 已跑完，保证 kb_card/analyze_task 表已建）
     expose: ["8000"]
 
   nginx:
@@ -139,15 +141,16 @@ services:
     depends_on: [sks-server]
 ```
 
-### 5.3 独立部署怎么操作
+### 5.3 独立部署怎么操作（镜像 tag 策略）
 
-- **sks-ai 独立发版**：sks-ai 仓 git tag v1.2 → CI build 推 `ghcr.io/.../sks-ai:v1.2`。
-- **sks-ai 独立部署**：deploy 仓改 `sks-ai.image` 的 tag（或用 `:latest` + `docker compose pull sks-ai`）→ `docker compose up -d sks-ai` 只拉新镜像只重启 sks-ai，不碰 sks-server/pg/nginx。sks-server 同理。
+- **deploy 仓 compose 钉具体 tag**（如 `ghcr.io/.../sks-ai:v1.2`），不用 `:latest`——`:latest` 有"本地缓存不更新"风险（§8）。
+- **sks-ai 独立发版**：sks-ai 仓 git tag v1.2 → CI test 通过 → build 推 `ghcr.io/.../sks-ai:v1.2`。
+- **sks-ai 独立部署**：deploy 仓改 `sks-ai.image` 的 tag 为 v1.2 → `docker compose up -d sks-ai` 只拉新镜像只重启 sks-ai（不碰 sks-server/pg/nginx；`--no-deps` 可避免顺带重启依赖）。sks-server 同理。`:latest` 仅本地 dev 临时用。
 - **本地调试不受影响**：Java 用 IDEA、Python 用 PyCharm/`uv run uvicorn`、前端 `npm run dev`，全在宿主进程跑，不依赖 compose。compose 是部署用。
 
-### 5.4 启动顺序（必须钉死，见 §8 风险）
+### 5.4 启动顺序（compose dependency 保证，见 §8 风险）
 
-`depends_on: [postgres]` 保证 sks-server/sks-ai 等 pg 健康后才起（单 compose 内 dependency 成立）。但若手动分批起，README 钉死：**先 postgres，后 sks-server/sks-ai，最后 nginx**。checkpointer 无懒重试的风险见 §8。
+compose dependency 链：`postgres` → `sks-server`(depends postgres, Flyway 在它启动时跑) → `sks-ai`(depends sks-server healthy，即 Spring Boot 起完=Flyway 跑完=表已建) → `nginx`(depends sks-server)。单 compose `up` 自动按此序。若手动分批起，README 钉死同序。checkpointer 无懒重试的风险见 §8。
 
 ## 6. 文档归属
 
@@ -165,10 +168,11 @@ services:
 
 1. **HTTP 端点契约**：`/ai/*` 端点形状、`X-Service-Token`/`X-Request-Id` 头、请求/响应体、§5.3 超时链（Python LLM 120s×≤2 ≈ 250s < Java AiClient 270s < nginx 300s）。从现有 `AiClient.java` 注释 + pydantic models 抽取。拆仓后 Java record 与 Python model 字段漂移是第一类腐化风险，此文档是字段契约真相。
 
-2. **共享表契约**（更隐蔽，必须单列一节）：sks-ai 直接读写 `kb_card`、`analyze_task`（外加自建 LangGraph 检查点表 `checkpoint_*`）。这些表的 schema 由**deploy 仓 Flyway 拥有**（sks-server 仓的迁移经 deploy compose 执行）——拆仓后这是第二类契约面。该节列：
+2. **共享表契约**（更隐蔽，必须单列一节）：sks-ai 直接读写 `kb_card`、`analyze_task`（外加自建 LangGraph 检查点表 `checkpoint_*`）。这些表的 schema 迁移 `V*.sql` 由 **sks-server 仓拥有**（在 `sks-server/src/main/resources/db/migration/`，被 Dockerfile `COPY src` + `package` 打进 jar、打进镜像）——**deploy 仓不含任何 Flyway 文件**，只是运行 sks-server 镜像时 Spring Boot 自动执行 Flyway。拆仓后这是第二类契约面。该节列：
    - sks-ai 依赖的表/列清单 + 语义（如 `analyze_task.progress`「已完成条数比例」语义、`kb_card.embedding` 固定 `vector(1024)` 维——之前专门钉死过的口径）。
-   - 声明 schema 归属：**sks-ai/sks-server 仓不做迁移**，部署依赖 deploy 仓 compose 启动时 Flyway 已执行到 V≥N（当前 V3）。
+   - 声明 schema 归属：**迁移归 sks-server 仓**（打进镜像），部署时 deploy compose 启动 sks-server 容器 → Spring Boot Flyway 执行到 V≥N（当前 V3）；**sks-ai 仓不做迁移**（含 kb_card/analyze_task 的表也由 sks-server 仓 Flyway 建）。
    - LangGraph `checkpoint_*` 表是例外（sks-ai 自己 `setup()` 建，归 sks-ai 仓管）。
+   - 启动顺序约束：sks-ai 必须在 sks-server（Flyway）跑完后才服务 RAG（compose `depends_on: sks-server healthy` 保证，§5.4）。
 
 ## 7. 迁移步骤
 
@@ -188,9 +192,9 @@ mkdir /Users/rick/work/sks-server && cd /Users/rick/work/sks-server
 git init && git pull /Users/rick/work/sks-agent split-sks-server
 ```
 
-### 7.2 给两服务仓补 CI + 文档
-- sks-ai 仓：加 `.github/workflows/ci.yml`（build+push 镜像到 GHCR）、`.env.example`（精简，本地 dev 参考）、`.gitignore`、`README.md`、`docs/API_CONTRACT.md`；清理 `app/config.py` 删 `ALIYUN_SMS_SIGN`。
-- sks-server 仓：加 `.github/workflows/ci.yml`、`.env.example`（精简）、`.gitignore`、`README.md`（含 `application-local.yml` + local profile 的本地调试说明，见既有记忆 `local-idea-run-java-env`）。
+### 7.2 给两服务仓补 CI（test→build→push）+ 文档
+- sks-ai 仓：加 `.github/workflows/ci.yml`（`uv run pytest` 带 dev 依赖 → 绿 → `docker build` → push GHCR；workflow 配 `packages: write`）、`.env.example`（精简，本地 dev 参考）、`.gitignore`、`README.md`、`docs/API_CONTRACT.md`；清理 `app/config.py` 删 `ALIYUN_SMS_SIGN`。
+- sks-server 仓：加 `.github/workflows/ci.yml`（`./mvnw test` → 绿 → `docker build` → push GHCR）、`.env.example`（精简）、`.gitignore`、`README.md`（含 `application-local.yml` + local profile 的本地调试说明，见既有记忆 `local-idea-run-java-env`；**注意 spring.config.import 用相对路径 `optional:file:.env[.properties]` + 工作目录=仓库根，别写死老 monorepo 绝对路径**）。
 - 各仓逐个 commit。
 
 ### 7.3 建两 GitHub 远程 + push
@@ -206,17 +210,27 @@ git branch -M main && git push -u origin main
 ```
 触发 CI build 镜像到 GHCR（默认 `GITHUB_TOKEN` 即可推本仓命名空间，workflow 需配 `packages: write` 权限，见 §8）。
 
-### 7.4 原仓库改造为 deploy 仓
+### 7.4 原仓库改造为 deploy 仓（**必须等 7.3 镜像 published 后**）
+> gate：先确认两服务仓 CI green、`ghcr.io/wangbuer1984/sks-server:<tag>` 与 `sks-ai:<tag>` 已 published（`docker pull` 能拉到），再做本步——否则 deploy compose `up` 会 pull 失败。
+
 ```bash
 cd /Users/rick/work/sks-agent
 git rm -r sks-ai sks-server
-# 编辑 docker-compose.yml：sks-server/sks-ai 改 image: ghcr.io/.../<svc>:latest（不再 build: ./sks-x）
+# 编辑 docker-compose.yml：sks-server/sks-ai 改 image: ghcr.io/.../<svc>:<tag>（钉具体 tag，不用 :latest）
+#   sks-ai depends_on 改成 sks-server healthy（§5.2/5.4，保证 Flyway 先跑）
 # 编辑 .env.example：补全为单份全量（§4）
 # 编辑 CLAUDE.md：三仓架构说明
-# 编辑 deploy/GO_LIVE_CHECKLIST.md：「4 容器」描述更新（§6）
+# 编辑 deploy/GO_LIVE_CHECKLIST.md：「4 容器」描述更新（§6，sks-server/sks-ai 为 GHCR 镜像）
 # 可选：GitHub 仓库名改 sks-agent-deploy
 git commit -m "chore: 三仓拆分——本仓变为 deploy 仓（sks-server/sks-ai 见各自仓 + GHCR 镜像）"
 git push
+```
+
+### 7.4.1 部署运行（写进 deploy 仓 README）
+```bash
+# 无需 docker network create（单 compose 单默认网络）
+docker compose pull          # 拉两服务镜像
+docker compose up -d        # 按 depends_on 顺序起：pg → sks-server(Flyway) → sks-ai → nginx
 ```
 
 ### 7.5 清理临时分支
@@ -230,8 +244,10 @@ cd /Users/rick/work/sks-agent && git branch -D split-sks-ai split-sks-server
 - **执行顺序**：先抽两新仓并 push 成功（7.1-7.3），再动原仓（7.4）。抽离出问题时原仓未动，安全。
 - **.env 真值不进 git**：deploy 仓 `.env` gitignored；服务仓 `.env`（本地 dev）也 gitignored。运行时 deploy 仓 `.env` 是唯一真值源。
 - **跨仓契约漂移**：`AiClient` record（sks-server 仓）与 pydantic model（sks-ai 仓）字段变更 + 共享表 schema 变更（deploy 仓 Flyway）靠 `docs/API_CONTRACT.md`（sks-ai 仓）两个契约面约束。镜像方案下 `.env` 单份，无跨仓密钥同步负担。
-- **启动顺序（单列风险）**：`/health 仍 UP` 兜底**只覆盖 asyncpg 池**（有懒重试）。`checkpointer`（`_init_checkpointer`）只在启动时初始化一次、无懒重试。单 compose 有 `depends_on: [postgres]` 保证 pg 先健康，缓解；但若手动分批起，interview 端点会一直坏，`/health` 显示 UP、`restart: unless-stopped` 不救（进程没死）。**缓解**：README 钉死启动顺序；给 checkpointer 补懒重试标为 out-of-scope（本次不做，但风险写明，别让「/health 仍 UP」读起来像全兜住了）。
-- **镜像 tag 漂移**：deploy 仓 compose 用 `:latest` 方便但有"本地缓存不更新"风险，生产建议钉具体 tag。CI 首次推 GHCR 需 GitHub Actions 有写 ghcr.io 权限（默认 GITHUB_TOKEN 即可推本仓命名空间）。
+- **启动顺序（两处风险，单列）**：
+  1. **sks-ai 依赖 sks-server 的 Flyway 表**：sks-ai RAG 读 `kb_card`/`analyze_task`，这些表由 sks-server 镜像启动时 Spring Boot Flyway 建。如果 sks-ai 先于 sks-server 起来服务请求，表不存在 → RAG 报错。**缓解**：compose `sks-ai depends_on: sks-server healthy`（healthcheck `/api/health` UP = Spring Boot 已起完 = Flyway 已跑完，表已建，§5.4）；独立重启 sks-ai 用 `docker compose up -d --no-deps sks-ai` 或 `restart sks-ai`（不触发依赖重启）。
+  2. **checkpointer 无懒重试**：`/health 仍 UP` 兜底**只覆盖 asyncpg 池**（有懒重试）。`checkpointer`（`_init_checkpointer`）只在启动时初始化一次、无懒重试。若 sks-ai 先于 pg 起来，interview 端点会一直坏，而 `/health` 显示 UP、`restart: unless-stopped` 不救（进程没死）。**缓解**：compose `depends_on` 保证 pg 先健康；给 checkpointer 补懒重试标为 out-of-scope（本次不做，但风险写明，别让「/health 仍 UP」读起来像全兜住了）。
+- **镜像 tag 漂移**：deploy 仓 compose 用 `:latest` 有"本地缓存不更新"风险，故钉具体 tag（§5.3）。CI 推 GHCR 用默认 `GITHUB_TOKEN`（workflow 配 `packages: write` 权限，推本仓命名空间，无需 PAT）。GHCR 命名空间自动 lowercase owner：仓库 URL `WangBuer1984/sks-ai`（mixed）但镜像路径 `ghcr.io/wangbuer1984/sks-ai`（lowercase），两者都对，勿混淆。
 
 ## 9. 不在本次范围
 
