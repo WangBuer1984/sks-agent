@@ -85,7 +85,7 @@ sks-agent-deploy/
 | key | 注入到 | 说明 |
 |---|---|---|
 | `POSTGRES_DB/USER/PASSWORD` | postgres + sks-server + sks-ai | pg 建库 + 两服务连库 |
-| `DATABASE_URL` | sks-ai | Python 连 pg（`postgresql://...@postgres:5432/...`）|
+| `DATABASE_URL` | compose 构造（不放进 deploy .env）| deploy compose `environment` 块从 `POSTGRES_USER/PASSWORD/DB` 拼出，覆盖 env_file；仅服务仓本地 `.env.example` 含（指向 `localhost:5432`）|
 | `SPRING_DATASOURCE_*` | sks-server | Java 连 pg（deploy 仓 compose 的 environment 块注入，指向 `postgres:5432`）|
 | `JWT_SECRET_USER/ADMIN` | sks-server | Java JWT 签发 |
 | `SERVICE_TOKEN` | sks-server + sks-ai | **单份，两边一致天然保证**（同一个 .env）|
@@ -118,16 +118,23 @@ services:
     # ...（同现状，env 建库）
 
   sks-server:
-    image: ghcr.io/wangbuer1984/sks-server:latest   # 按镜像引用，不 build
+    image: ghcr.io/wangbuer1984/sks-server:<tag>   # 按镜像引用，不 build（§5.3：钉具体 tag，不用 :latest）
     env_file: .env
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
       # ...（同现状）
-    depends_on: [postgres]
+    depends_on:
+      postgres: { condition: service_healthy }      # 等 pg 健康后再起，否则 Flyway 连库失败
     expose: ["8080"]
+    healthcheck:                                    # 必须定义：sks-ai 的 depends_on condition: service_healthy 依赖此
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   sks-ai:
-    image: ghcr.io/wangbuer1984/sks-ai:latest        # 按镜像引用
+    image: ghcr.io/wangbuer1984/sks-ai:<tag>        # 按镜像引用（§5.3：钉具体 tag，不用 :latest）
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
