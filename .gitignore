@@ -1,5 +1,8 @@
 # Secrets / local env (never commit)
 .env
+**/application-local.yml
+docker-compose.override.yml
+.claude/settings.local.json
 
 # Java / Maven
 **/target/
