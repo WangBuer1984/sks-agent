@@ -56,10 +56,13 @@ public interface RechargeOrderMapper extends BaseMapper<RechargeOrder> {
     @Select("SELECT * FROM recharge_order WHERE user_id = #{uid} ORDER BY created_at DESC, id DESC LIMIT 1")
     RechargeOrder findLatest(@Param("uid") long userId);
 
-    /** 订单列表，按 status 过滤（null → 全部），按创建时间倒序。user 手机尾号在 service 层 join。 */
+    /** 订单列表，按 status 过滤（null → 全部），按创建时间倒序。user 手机尾号在 service 层 join。
+     *  {@code #{status}::text} 必须显式转型：PG 对 {@code #{status} IS NULL} 中的 null 参数无法推断类型，
+     *  JDBC 发出 unspecified-type null → 报 {@code could not determine data type of parameter $1}。
+     *  加 {@code ::text} 后参数为 typed null，null/非 null 两路径都通。 */
     @Select(
             "SELECT * FROM recharge_order "
-                    + "WHERE (#{status} IS NULL OR status = #{status}) "
+                    + "WHERE (#{status}::text IS NULL OR status = #{status}) "
                     + "ORDER BY created_at DESC, id DESC")
     List<RechargeOrder> listOrders(@Param("status") String status);
 }
