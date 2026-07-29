@@ -8,9 +8,9 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 
 ## 0. 已验证（本地容器栈 E2E 通过，无需真实外部 key）
 
-以下在 `docker compose --env-file .env up -d --build` 后已端到端验证：
+以下在 `docker compose pull --ignore-buildable && docker compose up -d` 后已端到端验证：
 
-- ✅ 4 容器全 healthy（postgres / sks-server / sks-ai / nginx，P0–P5 最新代码）
+- ✅ 5 容器全 healthy（postgres / sks-server / sks-ai / sks-web / nginx，sks-server/sks-ai/sks-web 为 GHCR 镜像，gateway 本地 build）
 - ✅ `GET /api/health`（经 nginx）→ `{"status":"UP"}`
 - ✅ `curl /50x.html` → 200（兜底页可达）
 - ✅ 注册流：send-code（SMS stub）→ 登录 → `isNew` 触发体验额度钩子 → `GET /api/user/me` balance=3
@@ -67,7 +67,7 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 
 ## 2. 外部 / 控制台配置（无代码，详见 `deploy/OPS.md`）
 
-- [ ] **certbot Let's Encrypt**：真实域名签发证书 + 续期 crontab；nginx 443 server block 取消注释；`certbot renew --dry-run` 通过
+- [ ] **certbot Let's Encrypt**：真实域名签发证书 + 续期 crontab；nginx 443 server block 取消注释 + **443 块 `location /` 改 `proxy_pass http://sks-web:80`（同 80 块）+ 删 443 块 server 级 root/index**（见 gateway nginx.conf）；`certbot renew --dry-run` 通过
 - [ ] **UptimeRobot**（免费版）：监控 `https://<域名>/api/health` 期望 `{"status":"UP"}`，5 分钟间隔，宕机 email + 短信
 - [ ] **OSS/COS 对象存储**：`pg_backup.sh` 的 `OSS_BUCKET` 设值后启用真实上传（当前 env-gated 跳过）；备份保留 30 天
 - [ ] **`{{CONTACT_WECHAT}}` 替换**：部署的 `50x.html` 用 envsubst 替换为真实站长微信号（勿硬编码）
@@ -110,7 +110,7 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 
 ```bash
 # 起栈
-docker compose --env-file .env up -d --build
+docker compose pull --ignore-buildable && docker compose up -d
 
 # 健康
 curl -s localhost/api/health                          # {"status":"UP"}

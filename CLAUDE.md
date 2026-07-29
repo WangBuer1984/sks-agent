@@ -1,78 +1,57 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working in this repository.
 
-## Repo status: docs-first, not yet implemented
+## Repo status: deploy/编排仓（四仓拆分后）
 
-This repository is **design + planning only**. There is no `sks-server/`, `sks-ai/`, or `sks-web/` source code yet — only specification documents and HTML prototypes. Until implementation begins per the plan below, "working in this repo" means editing the docs, not running builds. The git history is all `docs:` commits.
+本仓为 **deploy 仓**——四仓拆分后集中持有 docker-compose 编排 + gateway nginx + .env + 部署文档。三服务源码已分属各自仓库（sks-server / sks-ai / sks-web），各自独立发版到 GHCR，本仓按镜像引用。**本仓不写业务代码**——业务代码的硬不变量与构建/测试命令在各服务仓的 scoped CLAUDE.md。
 
-The product is **「随口说」(Suikoushuo)** — a paid-per-use web AI agent for口播 (talking-head) video scriptwriting. Read the source-of-truth docs before making decisions; they encode choices that were deliberated and should not be silently re-litigated:
-
-- `随口说PRD .md` — product requirements (V1.0). Business model, user flows, credit rules, exception handling, MVP/V1.1/V2 scope.
-- `docs/superpowers/specs/2026-07-19-suikoushuo-tech-design.md` — tech design (V1.0). Architecture, data model, the four key flows, risks. **The authoritative technical reference.**
-- `docs/superpowers/plans/2026-07-19-suikoushuo-mvp.md` — task-by-task MVP implementation plan (TDD steps with Run/Expected commands). Follow this when writing code; it uses checkbox (`- [ ]`) syntax.
-- `随口说原型-07191700.html` / `随口说后台管理原型-admin.html` — interactive prototypes (C端 + 站长后台). Large HTML files; treat as visual reference, not code to edit.
-
-## Architecture (planned, not yet built)
-
-Monorepo with **two independent services** + a frontend, orchestrated by one `docker-compose.yml`:
+## 四仓架构
 
 ```
-浏览器 (React SPA) ──HTTPS──▶ nginx ──▶ Java (Spring Boot 3, 唯一公网入口)
-                                        │ 内网 HTTP (同步 JSON / X-Service-Token)
-                                        ▼
-                                      Python (FastAPI + LangGraph, 不暴露公网)
-                                        │
-                          PostgreSQL 16 + pgvector ◀──┘ (业务表 + 向量 + LangGraph 检查点, 单库三合一)
-                          智谱 GLM API · TikHub 数据 API · 阿里云 SMS/ASR/内容安全
+浏览器 (React SPA) ──HTTPS──▶ nginx(gateway, 本仓本地 build) ──▶ /api/ → sks-server(image)
+                                                                └─▶ /    → sks-web(image)
+                                          sks-server ──内网 HTTP+X-Service-Token──▶ sks-ai(image)
+                                          PostgreSQL 16 + pgvector ◀── (deploy 仓 compose 管，单库三合一)
 ```
 
-**Why two services, why Java is the only public entry:** the credit transaction chain (扣额度 → 调生成 → 失败退额度) stays closed-loop inside Java with no cross-service reconciliation. Python is stateless (state externalized to Postgres via LangGraph checkpointer + `analyze_task` table), doesn't do auth, trusts only the internal network + shared `X-Service-Token`, and can be restarted anytime without losing data.
+- **三服务仓**（各自 GHCR 镜像独立发版，硬不变量见各自 scoped CLAUDE.md）：
+  - sks-server（Java，唯一公网入口，鉴权/额度/CRUD/状态机）→ `ghcr.io/wangbuer1984/sks-server:<tag>`
+  - sks-ai（Python FastAPI+LangGraph，内网 AI 服务，不暴露公网）→ `ghcr.io/wangbuer1984/sks-ai:<tag>`
+  - sks-web（React SPA + nginx 静态服务）→ `ghcr.io/wangbuer1984/sks-web:<tag>`
+- **deploy 仓**（本仓）：`docker-compose.yml`（5 服务按镜像引用 + gateway 本地 build + postgres）、`.env`（单份全量，gitignored）、`deploy/nginx/`（gateway Dockerfile+nginx.conf+50x.html）、`docs/`（PRD/tech-design/MVP plan/学习文档/拆分 spec+plan）。
 
-**Java packages** (`sks-server/src/main/java/com/sks/`): `auth` (C端 手机号+验证码) · `admin` (站长后台 账号密码, 隔离) · `user` · `credit` (额度账本, 钱的核心, 测试最厚) · `profile` (定位档案) · `kb` (知识库 A/B/C 卡) · `topic` (选题库四路) · `analyze` (拆视频/拆账号) · `script` (文案创作, 含逐句编辑) · `review` (复盘状态机) · `aiclient` (调 Python 的唯一出口, 统一超时/重试/错误码翻译) · `common` · `config`.
+## 指向各服务仓 scoped CLAUDE.md
 
-**Python packages** (`sks-ai/app/`): `api` (每 skill 一个 endpoint) · `skills/` (interview / script_gen / video_analyze / account_analyze / attribution / card_gen) · `rag` · `llm` (智谱 GLM 封装 + 档位配置, 业务代码不感知型号) · `safety` · `datasource` (TikHub + ASR 转写管线) · `db.py` (asyncpg, 仅用于 RAG/checkpointer/analyze_task).
+三服务仓各有一份 scoped CLAUDE.md 承载该仓的硬不变量 + 构建/测试命令。**在本仓干 deploy/编排活读不到那些约束；改动某服务代码时切到对应服务仓读其 CLAUDE.md。** 跨仓契约：Java↔Python 见 sks-ai 仓 `docs/API_CONTRACT.md`；前端↔Java 见 sks-server 仓 `docs/REST_CONTRACT.md`。
 
-## Hard invariants (do not violate when implementing)
+## 前端视觉基准
 
-These are project-level constraints from the plan's "Global Constraints" — every task implicitly carries them:
+两份原型 HTML（C 端 + 站长后台）归 **sks-web 仓 `prototypes/`**（只读不改），不在本仓。
 
-- **No streaming output.** All user-facing LLM natural-language output (稿件、卡片、访谈、拆解文本、归因) must be: generate complete → content-safety review passes → return as one JSON. No SSE / typewriter. (Rationale: content safety must review before display; streaming would show unreviewed content.) Use progress animations to mask the 30–60s wait.
-- **AI stack single vendor: 智谱 GLM.** All LLM calls go through GLM (OpenAI-compatible protocol); vectors use 智谱 embedding-3 **fixed at 1024 dims**. Model IDs appear only in Python `llm/` config; business code never hardcodes model names. Per-skill tiering: 创作类 GLM-4.7 (thinking off) · 轻量抽取 GLM-4.5-Air · 深度归纳/归因 GLM-4.7 (thinking on).
-- **Java is the only public entry.** Python accepts only requests with a correct `X-Service-Token`; every Java→Python call carries a Java-generated `X-Request-Id`.
-- **Credit concurrency safety:** deduct via atomic conditional update `UPDATE credit_account SET balance = balance - :n WHERE user_id = :uid AND balance >= :n`, judge success by rows-affected. Never read-then-write. Refund idempotency via `credit_ledger` unique constraint on `(biz_id, biz_type, type)`.
-- **Admin isolation:** separate `admin_user` table, all admin routes under `/api/admin/**` with an independent `SecurityFilterChain`, JWT signed with a different key/claim than C端 — the two token types are not interchangeable. No admin registration; seed via Flyway migration with password hash from env.
-- **No Redis / MQ / microservices / K8s.** Verification codes, rate-limiting, and async tasks all use Postgres tables + Java `@Scheduled` polling.
-- **Admin/C端 JWT secrets from env**, all keys (DB password, GLM key, TikHub key, 阿里云 key, service token, JWT secrets) via `.env` — `.env` is gitignored.
-- **Testing focus:** `credit` (deduct/refund/idempotency/concurrency), review state machine, SMS rate-limiting must have JUnit coverage; Python uses pytest with mocked LLM. Java tests use Testcontainers `pgvector/pgvector:pg16` — **not H2**, to keep SQL dialect identical. TDD throughout (the plan's steps are ordered write-failing-test → implement → pass).
+## 部署 / 编排命令（本仓本职）
 
-## Build / test / run commands (planned layout)
+- `docker compose pull --ignore-buildable`（拉三服务镜像；gateway 只有 build: 无 image:，跳过；需 Compose v2.22+，老版本 `docker compose pull sks-server sks-ai sks-web`）
+- `docker compose up -d`（按 depends_on 起：pg → sks-server(Flyway)/sks-web → sks-ai → nginx-gateway）
+- `docker compose build nginx && docker compose up -d nginx`（改 gateway 配置后）
+- 独立部署某服务：deploy 仓改 `<svc>.image` tag → `docker compose pull <svc> && docker compose up -d <svc>`（`--no-deps` 避免顺带重启依赖）
+- 健康检查：`curl localhost/api/health`（Java，经 nginx）→ `{"status":"UP"}`；`curl localhost/50x.html` → 200（gateway 兜底页）；Python `GET /health` → `{"status":"UP"}`
 
-Repo-root orchestration:
-- `docker compose --env-file .env up -d --build` — start all four containers (nginx / sks-server / sks-ai / postgres). `--build` is required for new Flyway migrations to land; a bare restart won't pick them up.
-- Health checks: `curl localhost/api/health` (Java, via nginx) → `{"status":"UP"}`; Python `GET /health` → `{"status":"UP"}`.
+详见 `deploy/OPS.md`、`deploy/GO_LIVE_CHECKLIST.md`、`README.md`。
 
-Java (`cd sks-server`, Maven Wrapper — no global mvn needed):
-- `./mvnw test` — run all tests
-- `./mvnw test -Dtest=CreditServiceTest` — single test class
-- `./mvnw test -Dtest="AuthServiceTest,UserServiceTest"` — multiple classes
+## 关键约束（deploy 仓侧）
 
-Python (`cd sks-ai`):
-- `pytest tests/test_script_gen.py -v` — single file
-- `pytest tests/test_script_gen.py tests/test_retrieve.py -v` — multiple files
+- **gateway 不镜像化**：本地 build（`nginx:alpine + 两文件` nginx.conf + 50x.html），无 CI/registry。改 gateway = `compose build nginx && up -d nginx`。
+- **gateway nginx.conf 编辑基于现文件，勿整体覆盖**——保留三条承重注释（不加 internal+curl 验收 / 超时链后果「假 AI_FAILED→误退款」/ `{{CONTACT_WECHAT}}` 替换指引）。见拆分 spec §3.4。
+- **443 注释块陷阱**：启用 TLS 时 443 块 `location /` 必须是 `proxy_pass http://sks-web:80`（不可保留旧 try_files，gateway 无 dist → `/` 直接 404 全站黑）；server 级 root/index 删。见 GO_LIVE_CHECKLIST certbot 项 + 拆分 spec §3.4。
+- **gateway healthcheck 探 `/50x.html`**（不探 `/`——`/` 反代 sks-web 会耦合 sks-web 健康状态，违背独立部署）。
+- **镜像 tag 钉具体版本**：compose 不用 `:latest`（本地缓存不更新），钉 `v0.1.0` 等。
+- **单 named 网络 `sks-net`**（compose 自动创建，无需 `docker network create`）；顶层 `volumes: sks-pgdata` 必须声明。
+- **`.env` 单份全量住本仓**，compose `env_file: .env` 注入 sks-server 与 sks-ai（sks-web 无 env）。`.env` 真值 gitignored 不进 git；模板见 `.env.example`（按拆分 spec §4 枚举，漏配 SMS/MAIL 走 stub 静默不发，靠枚举兜底）。
+- **GHCR private**：部署机 `docker login ghcr.io`（PAT `read:packages`）或把三 package 设 public。GHCR 国内可达性见 OPS.md「部署机初始化」预验。
 
-Frontend (`sks-web/`): React 18 + Vite + TypeScript + Tailwind; state via TanStack Query (server) + Zustand (client).
+## 文档
 
-## Critical flows to understand before touching money/credit code
-
-1. **Credit transaction (§4.1 of tech design):** insert a `script` placeholder row (`review_state='generating'`) to get a stable `script_id` **before** charging → deduct in a short `REQUIRES_NEW` transaction **outside** the Python HTTP call → call Python (30–60s) → on success backfill the row / set `draft`; on any failure (timeout, connection break, parse failure, content-safety double-hit) set `failed` + write idempotent refund ledger. The orchestration method is **not** `@Transactional`; the long HTTP call must never hold a DB connection. "Fail → refund, never miss a charge."
-2. **Async analyze tasks (§4.3):** Java prechecks (calls Python `/ai/analyze/precheck`), charges (`max(1, min(10, floor(N/2)))` for 拆账号), creates `analyze_task(queued)`, calls Python async endpoint with `task_id` → Python writes progress/results **directly to the same `analyze_task` table** (not to Python-private memory/disk) → Java `@Scheduled` every 5s reads the table and advances state. Three timeout/stale cases the poller must cover or it swallows user credits: running-timeout (5min no `updated_at`, Python must explicitly set it — PG has no auto-update), partial, stale-queued (1min no running after acceptance). Single task ID across the whole chain.
-3. **Review state machine (§4.4):** seven states (`draft/pending/tracking/hot/plain/flop/rejected` + generating/failed pre-states), all transitions Java rule-based — **no AI judges state**. `hot` threshold = 近30天均值 × 3 (adjustable). `rejected` = 48h unadopted via scheduled scan. MVP playback counts are user-entered (`data_source=manual`); V1.1 auto-scrape reuses the state-machine code unchanged.
-
-## Data-model essentials
-
-~15 business tables. Key non-obvious decisions: AI outputs (档案、拆解结果、稿件分段) are JSONB, not relation tables (prompt-driven, iterate often) — only queryable/indexed fields (status, source, layer) are promoted to columns. `kb_card` is one table for all three layers (A/B/C) with `layer` + `card_type` + `embedding vector(1024)`. `user` is a PG reserved word → table is `app_user`. Embedding model+dim are bound to the pgvector column once chosen; switching models requires a full re-embed + column change. Full schema is in tech-design §3.
-
-## Commit convention
-
-Conventional Commits (`feat:` / `fix:` / `test:` / `chore:` / `docs:`). The existing history is all `docs:`; implementation commits should be frequent, one per plan step.
+- 拆分 spec：`docs/superpowers/specs/2026-07-28-sks-ai-split-design.md`
+- 拆分实施计划：`docs/superpowers/plans/2026-07-29-sks-agent-split.md`
+- 产品/技术设计：`随口说PRD .md`、`docs/superpowers/specs/2026-07-19-suikoushuo-tech-design.md`、`docs/superpowers/plans/2026-07-19-suikoushuo-mvp.md`（路径按拆分前 monorepo 布局，现分属三服务仓）

@@ -2,11 +2,41 @@
 
 > 对应设计文档 §5.3。本文记录<b>外部/控制台/宿主</b>侧的运维项——它们不是代码，
 > 无法单元测试，上线前由人按清单执行。代码侧产物见同目录 `nginx/`、`backup/` 与
-> `sks-server/src/main/java/com/sks/common/QuotaWatchJob.java`。
+> sks-server 仓 `src/main/java/com/sks/common/QuotaWatchJob.java`。
 >
-> <b>首次起栈前置</b>：若 `docker compose up -d --build` 卡在拉 Docker Hub 基础镜像
-> （`registry-1.docker.io` 被墙，报 `Connection reset by peer` / `failed to resolve source metadata`），
-> 先按 §8 配镜像加速器，再回来跑其余项。
+> <b>首次起栈前置</b>：`docker compose pull --ignore-buildable && docker compose up -d`（镜像化后不再 `--build` 三服务）。若卡在拉镜像——ghcr.io 三服务镜像见下「部署机初始化」GHCR 预验；Docker Hub 的 pgvector/nginx:alpine 见 §8 加速器（compose up 仍要从 Docker Hub 拉这两个）。
+
+## 镜像化部署模型（--build 心智模型 + 部署机初始化）
+
+镜像化后，旧的「`--build` 全量构建」语义变了：三服务仓不 build 了，按 GHCR 镜像引用；gateway 仍本地 build。
+
+| 场景 | 新（镜像化） |
+|---|---|
+| 新增 Flyway 迁移生效 | sks-server 仓发新 tag → CI 出镜像 → deploy 仓 bump `sks-server.image` tag → `compose pull sks-server && compose up -d sks-server` |
+| 前端发版 | sks-web 仓发新 tag → CI 出镜像 → deploy 仓 bump `sks-web.image` tag → `pull sks-web && up -d sks-web` |
+| 重建/首次起栈 | `compose pull --ignore-buildable`（需 Compose v2.22+，老版本 fallback `compose pull sks-server sks-ai sks-web`）→ `compose up -d` |
+| 回滚部署 | deploy 仓把 `<svc>.image` tag 改回上一版 → `pull && up -d` |
+
+### 部署机初始化（Aliyun Linux，裸机一次性）
+
+```bash
+# docker-ce 安装（dnf；以下序列实际走通，缺一步都装不上）
+sudo dnf install -y dnf-plugins-core
+sudo dnf config-manager --add-repo https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+# 引擎 + compose 插件（compose v2.22+ 是部署硬依赖，勿漏 docker-compose-plugin）
+# --setopt=install_weak_deps=False 跳过 rootless-extras（弱依赖，镜像源缺包会整个事务失败）
+sudo dnf install -y --setopt=install_weak_deps=False docker-ce docker-ce-cli containerd.io docker-compose-plugin
+sudo systemctl enable --now docker
+docker --version && docker compose version   # compose ≥ v2.22（--ignore-buildable 需要）
+
+# GHCR 国内可达性预验（拆分动手前即可验，不必等镜像出）
+curl -sS -o /dev/null -w '%{http_code}\n' --max-time 8 https://ghcr.io/v2/   # 401 = 通
+curl -sS -o /dev/null -w '%{http_code}\n' --max-time 8 https://pkg-containers.githubusercontent.com/   # blob 后端可达
+docker pull ghcr.io/astral-sh/uv:latest   # 实拉小型公共 GHCR 镜像 = 整条链通
+
+# 三服务镜像 private，拉取前认证（交互输入 PAT，需 read:packages；或把三 package 设 public 免 login）
+docker login ghcr.io -u <github-user>
+```
 
 ## 0. 联调-gated 项总览（代码留桩，上线/联调时接线）
 
@@ -29,13 +59,13 @@
 ```bash
 # 1) DNS 解析指向服务器；80 端口公网可达（certbot 验证用）
 # 2) 安装 certbot + nginx 插件
-sudo apt update && sudo apt install -y certbot python3-certbot-nginx
+sudo dnf install -y certbot python3-certbot-nginx
 
 # 3) 签发（自动改 nginx 配置 + 写 /etc/letsencrypt/live/域名/）
 sudo certbot --nginx -d 你的域名 --non-interactive --agree-tos -m 站长邮箱
 
 # 4) 取消 nginx.conf 中 443 块 + 80→443 跳转块的注释（域名替换为真实域名）；
-#    docker compose up -d --build nginx
+#    docker compose build nginx && docker compose up -d nginx
 
 # 5) 续期（certbot 装好后自动写入 /etc/cron.d/certbot，可手测）
 sudo certbot renew --dry-run
@@ -131,12 +161,12 @@ sks.quota.glm-threshold   (默认 20)
 
 | 层 | 超时 | 配置位置 |
 |----|------|----------|
-| Python 内 LLM 单次 | 120s × 最多 2（原始+1 重试）≈ 250s | `sks-ai/app/llm/` |
+| Python 内 LLM 单次 | 120s × 最多 2（原始+1 重试）= 240s | sks-ai 仓 `app/llm/` |
 | Java AiClient read | 270s | `sks.ai.read-timeout-seconds`（`application.yml`） |
 | Java AiClient connect | 10s | `sks.ai.connect-timeout-seconds` |
 | nginx `/api/` | 300s | `nginx.conf` `proxy_read_timeout` / `proxy_send_timeout` |
 
-链路：**250s < 270s < 300s**。误对齐的后果：nginx/Java 先掐断 Python 仍在跑的 LLM → 假 `AI_FAILED` →
+链路：**240s < 270s < 300s**。误对齐的后果：nginx/Java 先掐断 Python 仍在跑的 LLM → 假 `AI_FAILED` →
 误退款（钱不丢但工作白费、用户重试）。
 
 ## 7. 验收清单（§5.2 全链路手动过一遍）
@@ -148,10 +178,8 @@ sks.quota.glm-threshold   (默认 20)
 
 ## 8. 镜像加速器（首次起栈网络前置 — Docker Hub 被墙）
 
-`docker compose --env-file .env up -d --build` 首次要拉三个 Docker Hub 基础镜像：
-`node:22-alpine`（前端构建）、`python:3.12-slim`（sks-ai）、`eclipse-temurin:21-jre/jdk`（sks-server）。
-在无法直连 `registry-1.docker.io` 的网络（典型：中国大陆，`curl https://registry-1.docker.io/v2/`
-报 `Connection reset by peer`）下，构建会卡在 `failed to resolve source metadata`。
+镜像化后 compose up 拉的是 **ghcr.io 三服务镜像**（不吃 Docker Hub mirror）+ Docker Hub 的 `pgvector/pgvector:pg16`、`nginx:alpine`（gateway 本地 build，吃 mirror）。原"拉三个 Docker Hub 基础镜像 node/python/temurin"已作废——node/python/temurin 已 bake 进 GHCR 服务镜像。
+在无法直连 `registry-1.docker.io` 的网络（典型：中国大陆）下，Docker Hub 的 pgvector/nginx:alpine 会卡在 `failed to resolve source metadata`；ghcr.io 镜像见上「部署机初始化」预验。
 
 诊断 + 配阿里云加速器（每账号唯一地址，<b>本文档只记 key 名/步骤，不含地址值</b>）：
 
@@ -190,7 +218,7 @@ docker info | grep -iA3 'registry mirrors'
 #   https://<your-id>.mirror.aliyuncs.com/
 ```
 
-生效后重新构建：`docker compose --env-file .env up -d --build`。
+生效后重新构建：`docker compose pull --ignore-buildable && docker compose up -d`。
 
 > <b>踩坑</b>：colima 的 dockerd 跑在 Linux VM 里，读 VM 内 `/etc/docker/daemon.json`，
 > <b>不读</b>宿主 `~/.docker/daemon.json`。把 mirror 写进 `~/.docker/daemon.json` 不会报错，
