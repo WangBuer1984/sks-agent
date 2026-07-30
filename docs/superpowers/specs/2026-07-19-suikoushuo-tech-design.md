@@ -287,7 +287,7 @@ Java：@Scheduled 每 5 秒读 `analyze_task` 状态推进（轮询范围覆盖�
 ### 5.3 部署与运维
 
 - Docker Compose 四容器：`nginx`（HTTPS 终结 + 静态前端 + 反代）、`sks-server`、`sks-ai`、`postgres`；服务器 4C8G。**monorepo 单库**，`docker-compose.yml` 在仓库根，各服务 build context 直接指向子目录（`./sks-server`、`./sks-ai`、`./sks-web`），一次 `docker compose up -d --build` 全量起。服务运行时仍互相独立，日后需要也可各自拆容器/换机器。
-- **同步接口超时（全链路对齐，内层短于外层）**：唯一较长的同步接口是文案生成（等 30-60s）。最坏情形 = LLM 超时 120s × (1 次原始 + 1 次自动重试) ≈ 250s，因此从内到外：Python 内 LLM 单次超时 **120s**（§5.1）→ Java→Python HTTP client 读超时 **270s** → nginx `proxy_read_timeout` **300s**。拆账号与拆视频（链接版）都是异步任务式（立即返回 job、前端轮询），不占用长连接。
+- **同步接口超时（全链路对齐，内层短于外层）**：唯一较长的同步接口是文案生成（等 30-60s）。最坏情形 = LLM 超时 120s × (1 次原始 + 1 次自动重试) = 240s，因此从内到外：Python 内 LLM 单次超时 **120s**（§5.1）→ Java→Python HTTP client 读超时 **270s** → nginx `proxy_read_timeout` **300s**。拆账号与拆视频（链接版）都是异步任务式（立即返回 job、前端轮询），不占用长连接。
 - 配置管理：`.env` 注入（数据库密码、模型 API key、TikHub key、短信 key、服务间共享密钥）；**密钥不进 git**。
 - 日志：两服务 JSON 日志落盘 + `X-Request-Id` 串联；先不上日志系统。
 - 备份：每日 `pg_dump` → 对象存储（OSS/COS），保留 30 天——额度账本不可丢。
