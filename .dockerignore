@@ -1,0 +1,12 @@
+# gateway（唯一在本仓构建的镜像）的构建上下文是仓库根——compose 里 `context: .`。
+# 而 deploy/nginx/Dockerfile 实际只 COPY 两个文件。没有本文件时，整个仓库根会被打包发给
+# docker daemon：19MB 的 .git、.venv、.idea，以及**含真实密钥的 .env**。
+#
+# 密钥当前进不了镜像（Dockerfile 没有 COPY . ），但「上下文里躺着 .env」本身就是个定时炸弹——
+# 将来任何人加一条 COPY . 就会把线上密钥焊进镜像层，且 docker history 里洗不掉。
+#
+# 故用白名单：先排除一切，再逐个放行 Dockerfile 真正需要的文件。以后 gateway 要新增文件，
+# 必须在这里显式放行——漏放行会在构建时立刻报错（COPY 找不到文件），不会静默出错。
+*
+!deploy/nginx/nginx.conf
+!deploy/nginx/50x.html

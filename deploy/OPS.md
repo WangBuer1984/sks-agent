@@ -17,6 +17,16 @@
 | 重建/首次起栈 | `compose pull --ignore-buildable`（需 Compose v2.22+，老版本 fallback `compose pull sks-server sks-ai sks-web`）→ `compose up -d` |
 | 回滚部署 | deploy 仓把 `<svc>.image` tag 改回上一版 → `pull && up -d` |
 
+> **单服务重发不用连带重启 nginx。** 上面几行 `up -d <svc>` 会让该服务换个容器 IP。nginx 对
+> `proxy_pass` 里写死的主机名只在启动时解析一次并永久缓存，所以这原本会让网关一直 502、非重启
+> 网关不可恢复。`deploy/nginx/nginx.conf` 已改为 `resolver 127.0.0.11 valid=10s` + 变量式
+> `proxy_pass`，换 IP 后 10s 内自愈。已实测：上游 IP 从 `.2` 换到 `.6`，新配置 200、旧配置 502
+> 且错误日志仍在连旧 IP。
+>
+> 若哪天发现单服务重发后网关 502 不恢复，先查这两样是不是被改回去了。
+
+
+
 ### 部署机初始化（Aliyun Linux，裸机一次性）
 
 ```bash
