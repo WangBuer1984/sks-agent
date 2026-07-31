@@ -52,7 +52,7 @@ docker login ghcr.io -u <github-user>
 
 | 项 | 留桩位置 | 联调动作 |
 |----|----------|----------|
-| 阿里云 SMS 发送（验证码） | `AliyunSmsAuthClient`（DYPNS `SendSmsVerifyCode` 字面码，3 scene：LOGIN_REGISTER/VERIFY_OLD_PHONE/BIND_NEW_PHONE） | 填 `ALIYUN_SMS_SIGN` + `ALIYUN_SMS_TEMPLATE_LOGIN/VERIFY_OLD/BIND_NEW`（赠送签名/模板，空则走 stub 不真发） |
+| 阿里云 SMS 发送（验证码） | `AliyunSmsAuthClient`（DYPNS `SendSmsVerifyCode` 字面码，3 scene：LOGIN_REGISTER/VERIFY_OLD_PHONE/BIND_NEW_PHONE） | 填 `ALIYUN_SMS_TEMPLATE_LOGIN/VERIFY_OLD/BIND_NEW`（模板，空则走 stub 不真发）。签名不是 env 键——非 ASCII 经 .env 会被 ISO-8859-1 读成乱码，已写死在 `application.yml` 的 `sks.sms.sign-name` |
 | 告警邮件 | `QuotaWatchJob.sendAlert` → `AlertNotifier.notify`（`RechargeOrderService` 两处 `[SMS-STUB]` 留 TODO，钱路径，下个 plan） | 填 `SPRING_MAIL_*` + `SKS_ALERT_ADMIN_EMAIL`（465 + SSL，`MailAlertNotifier`） |
 | 阿里云 SMS 余额查询 | `QuotaWatchJob.querySmsBalance` → `Optional.empty()` | 接 BSS OpenAPI（QueryAccountBalance，需 AK 开 BSS 读权限；返回账户余额元，非短信条数）— dysmsapi 无余额查询 API |
 | 智谱账户余额查询 | `QuotaWatchJob.queryGlmBalance` → `Optional.empty()` | 接智谱 BigModel 用户余额查询 API，glm api-key via `.env` |
