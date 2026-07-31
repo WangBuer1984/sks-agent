@@ -203,9 +203,11 @@ SELECT id, status, progress, updated_at FROM analyze_task ORDER BY id DESC;  # �
 ```
 
 ### 8.2 跳过真短信拿 C 端 token
-短信配齐时（三个 `ALIYUN_SMS_TEMPLATE_*` + AK；签名已写死在 `application.yml`，无需配）`POST /api/auth/send-code` 会真发短信。不想消耗真实短信量时，可用 dev token（项目里有发 dev token 的途径，见 AuthService）跳过登录，直接拿 JWT 调受保护接口、验证 GLM 生成链路。
+`.env` 配了 `ALIYUN_ACCESS_KEY_ID/SECRET` 时 `POST /api/auth/send-code` 就会真发短信（签名/端点/模板号都在 `application.yml`，无需配；AK 是唯一闸门，空则只打日志不发）。不想消耗真实短信量时，可用 dev token（项目里有发 dev token 的途径，见 AuthService）跳过登录，直接拿 JWT 调受保护接口、验证 GLM 生成链路。
 
-> 若发码返回 `5003 短信发送失败` 且日志是 `isv.INVALID_PARAMETERS 签名或者模版无效`，先确认没人往 `.env` 里加回 `ALIYUN_SMS_SIGN`——非 ASCII 值经 `.env` 会被 properties 加载器按 ISO-8859-1 读成乱码，阿里云的报错完全不提编码。`AliyunSmsAuthClient.warnIfMangled` 会在日志里直接给出修法。
+> **发码报 `5003` 时先看这两条**——都不是代码问题，是配置回流：
+> 1. 日志是 `isv.INVALID_PARAMETERS 签名或者模版无效` → 查有没有人往 `.env` 加回 `ALIYUN_SMS_SIGN`。非 ASCII 值经 `.env` 会被 properties 加载器按 ISO-8859-1 读成乱码，而阿里云的报错完全不提编码。`AliyunSmsAuthClient.warnIfMangled` 会在日志里直接给出修法。
+> 2. 日志是 `[SMS-STUB]`（压根没发） → 查 AK 是否为空，或有人往 `.env` 加了空的 `ALIYUN_SMS_TEMPLATE_*=`（空值会覆盖 yml 默认值）。
 
 ### 8.3 管理端登录
 ```bash

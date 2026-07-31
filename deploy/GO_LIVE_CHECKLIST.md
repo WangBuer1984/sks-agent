@@ -40,7 +40,7 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 | `TIKHUB_API_KEY` | ❌ 空 | **联调必填**：TikHub。空则 precheck/hot_board/拆账号全 DataSourceError |
 | `ALIYUN_ACCESS_KEY_ID` | ❌ 空 | **联调必填**：阿里云主账号 AK。空则内容安全 fail-closed（**所有 UGC 被拦**）+ ASR + 余额查询 |
 | `ALIYUN_ACCESS_KEY_SECRET` | ❌ 空 | **联调必填**：阿里云 SK |
-| ~~`ALIYUN_SMS_SIGN`~~ | — | **不再是 env 键**：签名是非 ASCII，经 .env 会被 ISO-8859-1 读成乱码（阿里云回「签名或者模版无效」）。已写死在 sks-server `application.yml` 的 `sks.sms.sign-name`，换签名改那一行 |
+| ~~`ALIYUN_SMS_SIGN`~~ | — | **不再是 env 键**（连同端点与三个模板号）：全部写死在 sks-server `application.yml` 的 `sks.sms.*`，换签名/模板改那几行。短信「真发 or stub」的唯一闸门是上面 AK 两项 |
 | `SPRING_MAIL_HOST` | ❌ 空 | **联调必填**：SMTP 主机（告警邮件通道） |
 | `SPRING_MAIL_PORT` | 465 | SMTPS 端口（465 需 ssl.enable=true，已配） |
 | `SPRING_MAIL_USERNAME` | ❌ 空 | **联调必填**：SMTP 账号 |
@@ -59,9 +59,11 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 | `SKS_AI_READ_TIMEOUT` / `SKS_AI_CONNECT_TIMEOUT` | AiClient 超时（§5.3 链） | 默认 270 / 10 秒（**勿低于 270，否则 §5.3 链断裂**） |
 | `sks.review.hot-threshold` / `flop-threshold` | 复盘判态阈值 | 默认 3.0 / 0.5（近 30 天均值 × 阈值） |
 | `sks.quota.sms-threshold` / `glm-threshold` | 余额告警阈值 | 默认 100 条 / ¥20 |
-| `ALIYUN_SMS_TEMPLATE_LOGIN` | DYPNS 登录/注册赠送模板（如 `100002`，字面码 `{"code":"<6>","min":"5"}`） | 联调必填：空则 sendCode 走 stub 不真发 |
-| `ALIYUN_SMS_TEMPLATE_VERIFY_OLD` | DYPNS 换绑验旧号赠送模板 | 联调必填空：空则 verify-old 发码走 stub |
-| `ALIYUN_SMS_TEMPLATE_BIND_NEW` | DYPNS 换绑验新号赠送模板 | 联调必填空：空则 verify-new 发码走 stub |
+
+> ~~`ALIYUN_SMS_TEMPLATE_LOGIN` / `_VERIFY_OLD` / `_BIND_NEW`~~ 已不是 `.env` 缺失项——三个模板号
+> （`100001` / `100002` / `100004`，字面码 `{"code":"<6>","min":"5"}`）连同签名与端点都写死在 sks-server
+> `application.yml` 的 `sks.sms.*`。**别为了「补齐」往 `.env` 加回这几行**：留一行空的 `XXX=` 会覆盖掉
+> yml 里的值（`${VAR:默认值}` 对「已定义但为空」用空值），短信静默退回 stub、不发也不报错。
 
 ---
 
@@ -81,7 +83,7 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 - [ ] **GLM 结构化输出**：`script_gen` 的 `{hook,body,cta}` 句结构 schema 被智谱正确返回（json_schema 支持）；`interview` summarize schema、`card_gen` schema 同理
 - [ ] **GLM thinking 转发**：`extra_body.thinking` 经 langchain-openai 透传到智谱（归因/归纳用 thinking-on 档）
 - [ ] **阿里云内容安全签名**：`content_safety` 的 ACS ROA 签名（HMAC）被正确接受（fail-closed 解除，正常 UGC 不再被拦）
-- [ ] **阿里云短信认证（DYPNS）**：`POST /api/auth/send-code` 真收验证码（字面码，`AliyunSmsAuthClient` DYPNS `SendSmsVerifyCode`，填 `ALIYUN_SMS_TEMPLATE_LOGIN/VERIFY_OLD/BIND_NEW`；签名不走 env，见上表）
+- [ ] **阿里云短信认证（DYPNS）**：`POST /api/auth/send-code` 真收验证码（字面码，`AliyunSmsAuthClient` DYPNS `SendSmsVerifyCode`；只需配 AK 两项，签名/模板已在 `application.yml`，见上表）
 - [ ] **告警邮件（SMTP）**：`SPRING_MAIL_*` + `SKS_ALERT_ADMIN_EMAIL` 配齐，`QuotaWatchJob` 触发告警邮件送达站长邮箱（`MailAlertNotifier`，465 + SSL）
 - [ ] **TikHub 响应契约**：`account_top_videos`/`precheck`/`hot_board` 的字段路径（`aweme_list`/`code==200`/`hot_list`）与防御性解析一致；`api.tikhub.dev` 可达
 - [ ] **TikHub download_url 可达性**：阿里云 filetrans 能否拉取 TikHub 签名直链（反爬风险）；不能则需补 download→OSS→file_link 兜底
