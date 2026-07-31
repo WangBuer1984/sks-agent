@@ -24,6 +24,8 @@ services:
     env_file:
       - .env
     environment:
+      # 激活 prod profile（加载 application-prod.yml）——env 优先级高于镜像内 application.yml 的 local 默认。
+      SPRING_PROFILES_ACTIVE: prod
       # 数据源（容器内网主机名 postgres）
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
