@@ -53,6 +53,7 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 |---|---|---|
 | `ALIYUN_ASR_KEY` | 短 ASR（paraformer）+ 长转写（`qwen3-asr-flash`）→ `/ai/asr` 与拆视频/拆账号 | DashScope/百炼 API key，与主 AK 不同 |
 | `ALIYUN_ASR_APP_KEY` | **deprecated**（长转写已硬切 Qwen，sks-ai 不再读取） | 可留空；兼容旧 `.env` |
+| `ASR_TMP_DIR` | sks-ai 媒体下载/转码临时目录（可选） | 空 → 系统 tempfile；生产建议挂卷并监控磁盘 |
 | `ALIYUN_CONTENT_SAFETY_ENDPOINT` | 内容安全 POP 端点 | 默认 `https://green.cn-shanghai.aliyuncs.com`（`config.py` 有默认，可不设） |
 | `TIKHUB_BASE_URL` | TikHub 基址 | 默认 `https://api.tikhub.dev`（**主域名被墙，必须用此值**，`config.py` 有默认） |
 | `SKS_AI_BASE_URL` | Java→Python 内网地址 | 默认 `http://sks-ai:8000`（docker 内网） |
