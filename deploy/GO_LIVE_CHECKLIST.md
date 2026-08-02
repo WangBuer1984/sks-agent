@@ -51,8 +51,8 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 
 | Key | 用途 | 默认/说明 |
 |---|---|---|
-| `ALIYUN_ASR_KEY` | P2 短音频一句话识别（dashscope paraformer-realtime-v2）→ `/ai/asr` 校准语音回答 | 阿里云百炼 API key，与主 AK 不同 |
-| `ALIYUN_ASR_APP_KEY` | P3 长音频录音文件识别（filetrans NLS）→ 拆视频/拆账号转写 | NLS 项目 appkey，与短音频 key 不同 |
+| `ALIYUN_ASR_KEY` | 短 ASR（paraformer）+ 长转写（`qwen3-asr-flash`）→ `/ai/asr` 与拆视频/拆账号 | DashScope/百炼 API key，与主 AK 不同 |
+| `ALIYUN_ASR_APP_KEY` | **deprecated**（长转写已硬切 Qwen，sks-ai 不再读取） | 可留空；兼容旧 `.env` |
 | `ALIYUN_CONTENT_SAFETY_ENDPOINT` | 内容安全 POP 端点 | 默认 `https://green.cn-shanghai.aliyuncs.com`（`config.py` 有默认，可不设） |
 | `TIKHUB_BASE_URL` | TikHub 基址 | 默认 `https://api.tikhub.dev`（**主域名被墙，必须用此值**，`config.py` 有默认） |
 | `SKS_AI_BASE_URL` | Java→Python 内网地址 | 默认 `http://sks-ai:8000`（docker 内网） |
@@ -86,9 +86,10 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 - [ ] **阿里云短信认证（DYPNS）**：`POST /api/auth/send-code` 真收验证码（字面码，`AliyunSmsAuthClient` DYPNS `SendSmsVerifyCode`；只需配 AK 两项，签名/模板已在 `application.yml`，见上表）
 - [ ] **告警邮件（SMTP）**：`SPRING_MAIL_*` + `SKS_ALERT_ADMIN_EMAIL` 配齐，`QuotaWatchJob` 触发告警邮件送达站长邮箱（`MailAlertNotifier`，465 + SSL）
 - [ ] **TikHub 响应契约**：`account_top_videos`/`precheck`/`hot_board` 的字段路径（`aweme_list`/`code==200`/`hot_list`）与防御性解析一致；`api.tikhub.dev` 可达
-- [ ] **TikHub download_url 可达性**：阿里云 filetrans 能否拉取 TikHub 签名直链（反爬风险）；不能则需补 download→OSS→file_link 兜底
-- [ ] **【P2 联调首检】ASR webm 格式**：`_infer_format` 无 `webm` 分支，前端 MediaRecorder 恒发 `audio/webm` 被标 `wav`。核对 paraformer-realtime-v2 是否收 webm/opus；不收则改前端录 pcm/wav 或服务端转码（**第一处会坏的**）
-- [ ] **阿里云长音频 filetrans**：`ALIYUN_ASR_APP_KEY` + AK/SK 的 POP 签名；`send_audio_frame` chunking；callback timing
+- [ ] **TikHub download_url 可达性**：sks-ai 本地下载 TikHub 签名直链（反爬/CDN 过期）；视频号需 `decode_key` + `node` WASM decrypt
+- [ ] **sks-ai 镜像含 ffmpeg + nodejs**：`ffprobe`/`ffmpeg` 在 PATH（短 ASR pydub + Qwen 管线）；`node` 在 PATH（视频号 decode）。缺任一则长转写/校准语音会失败
+- [ ] **【P2 联调首检】ASR webm→pcm**：短 ASR 经 pydub+ffmpeg 转 pcm 再送 paraformer；镜像装 ffmpeg 后应可勾（不再依赖前端改格式）
+- [ ] **Qwen 长转写联调**：配 `ALIYUN_ASR_KEY`（百炼）后拆视频/拆账号能出非空 transcript；视频号分享链单条 + 拆账号 TOP N
 - [ ] **GLM `max_retries=1` 生效**：`client.py` 的 §5.3 超时链可证（Python 240<Java 270<nginx 300）；真实长 LLM 调用不被外层掐断
 
 ---
