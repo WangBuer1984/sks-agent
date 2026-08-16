@@ -2,7 +2,7 @@
 
 > 本文档面向「我想在 IDE / 终端里直接跑工程、打断点调试」的场景。**应用代码（Java、Python、前端）全部在宿主机本地运行**，只有 Postgres 因为 pgvector 扩展麻烦，推荐仍用 docker 起一个裸 pg 容器（也可以本地装 pg+pgvector，见 §6）。
 >
-> 生产部署见 `deploy/OPS.md`；全 docker 联调见 git 历史。
+> 生产部署见 `../../deploy/OPS.md`；全 docker 联调见 git 历史。
 
 ## 0. 拓扑与端口
 
@@ -43,9 +43,9 @@ nginx 在本地调试模式下**不需要**——前端 vite proxy 直连本地 
 
 ## 2. 第一步：起 Postgres（唯一用 docker 的部分）
 
-`docker-compose.yml` 默认**不暴露 pg 端口**（容器内网用）。本地调试要让宿主的 Java/Python 连上，加一个 override：
+`../../docker-compose.yml` 默认**不暴露 pg 端口**（容器内网用）。本地调试要让宿主的 Java/Python 连上，加一个 override：
 
-`docker-compose.override.yml`（放仓库根，已 gitignore，本地自建）：
+`../../docker-compose.override.yml`（放仓库根，已 gitignore，本地自建）：
 ```yaml
 services:
   postgres:
@@ -73,7 +73,7 @@ url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/sks}
 username: ${SPRING_DATASOURCE_USERNAME:sks}
 password: ${SPRING_DATASOURCE_PASSWORD:change_me}
 ```
-所以只要 pg 在 `localhost:5432`、库名 `sks`、用户 `sks`，Java 几乎零配置。**唯一必须覆盖的**是 `sks.ai.base-url`（默认 `http://sks-ai:8000` 是容器名，本地要改 `http://localhost:8000`），以及把 `.env` 里的密钥（SERVICE_TOKEN / JWT secrets / ZHIPU / 阿里云）注入进程。
+所以只要 pg 在 `localhost:5432`、库名 `sks`、用户 `sks`，Java 几乎零配置。**唯一必须覆盖的**是 `sks.ai.base-url`（默认 `http://sks-ai:8000` 是容器名，本地要改 `http://localhost:8000`），以及把 `../../.env` 里的密钥（SERVICE_TOKEN / JWT secrets / ZHIPU / 阿里云）注入进程。
 
 ### 方式 A：终端跑（推荐先用这个验证通）
 ```bash
@@ -99,12 +99,12 @@ curl localhost:8080/api/health        # → {"status":"UP"}（本地直连 Java�
 ### 方式 B：IDEA 跑（日常打断点用）
 1. 打开 `sks-server` 为 Maven 项目，等 IDEA 识别 JDK 21。
 2. **Run Configuration** → 选 `SksServerApplication`（主类 `com.sks.SksServerApplication`）。
-3. 在 Run Config 的 **Environment variables** 里填上面方式 A 第 2 步那 4 个 + `.env` 里的密钥；或在 IDEA 装 **EnvFile 插件**直接勾选根目录 `.env`，再补 `SKS_AI_BASE_URL=http://localhost:8000`。
+3. 在 Run Config 的 **Environment variables** 里填上面方式 A 第 2 步那 4 个 + `../../.env` 里的密钥；或在 IDEA 装 **EnvFile 插件**直接勾选根目录 `../../.env`，再补 `SKS_AI_BASE_URL=http://localhost:8000`。
 4. Debug 模式启动，可在 `AiClient` / `CreditService` / 各 Controller 随意打断点。
 
 ### Flyway 首跑会做什么
 - `V1__core_schema.sql`：建 ~15 张业务表（`app_user` / `credit_account` / `credit_ledger` / `script` / `kb_card` / `analyze_task` …）+ pgvector 扩展。
-- `V2__seed_admin.sql`：用 `ADMIN_SEED_USERNAME/PASSWORD`（来自 `.env`）种站长账号。
+- `V2__seed_admin.sql`：用 `ADMIN_SEED_USERNAME/PASSWORD`（来自 `../../.env`）种站长账号。
 - `V3__sms_scene_and_phone_change.sql`：短信 scene + 换绑相关。
 
 改了 migration 后重启 Java 即可重跑（Flyway 增量）；**不要**手删 `flyway_schema_history` 表除非你懂后果。
@@ -114,7 +114,7 @@ curl localhost:8080/api/health        # → {"status":"UP"}（本地直连 Java�
 ## 4. 第三步：本地跑 Python（sks-ai）
 
 ### 配置来源
-`app/config.py` 用 pydantic-settings 读 `.env`，但 **`.env` 里没有 `DATABASE_URL`**（compose 是通过 `environment:` 注入的）。本地必须显式设 `DATABASE_URL`，否则会落到默认 `postgres:postgres` 连不上。
+`app/config.py` 用 pydantic-settings 读 `../../.env`，但 **`../../.env` 里没有 `DATABASE_URL`**（compose 是通过 `environment:` 注入的）。本地必须显式设 `DATABASE_URL`，否则会落到默认 `postgres:postgres` 连不上。
 
 ### 终端跑
 ```bash
@@ -137,7 +137,7 @@ curl localhost:8000/health          # → {"status":"UP"}
 > ⚠️ sks-ai 的 `/health` 即使 DB 连不上也返回 UP（设计如此，不阻断启动）。真要看 DB 是否通，看启动日志有没有 `init_pool failed` / `checkpointer setup failed`，或直接调一个 RAG 端点（如 `POST /ai/embed`）。
 
 ### IDEA / PyCharm 跑
-Run Config 选 FastAPI / Uvicorn：module `uvicorn`，参数 `app.main:app --reload --port 8000`，工作目录 `sks-ai`，环境变量同上（`DATABASE_URL` + source `.env`）。Python 解释器用 `sks-ai/.venv`（`uv sync` 后生成）。
+Run Config 选 FastAPI / Uvicorn：module `uvicorn`，参数 `app.main:app --reload --port 8000`，工作目录 `sks-ai`，环境变量同上（`DATABASE_URL` + source `../../.env`）。Python 解释器用 `sks-ai/.venv`（`uv sync` 后生成）。
 
 ---
 
@@ -203,11 +203,11 @@ SELECT id, status, progress, updated_at FROM analyze_task ORDER BY id DESC;  # �
 ```
 
 ### 8.2 跳过真短信拿 C 端 token
-`.env` 配了 `ALIYUN_ACCESS_KEY_ID/SECRET` 时 `POST /api/auth/send-code` 就会真发短信（签名/端点/模板号都在 `application.yml`，无需配；AK 是唯一闸门，空则只打日志不发）。不想消耗真实短信量时，可用 dev token（项目里有发 dev token 的途径，见 AuthService）跳过登录，直接拿 JWT 调受保护接口、验证 GLM 生成链路。
+`../../.env` 配了 `ALIYUN_ACCESS_KEY_ID/SECRET` 时 `POST /api/auth/send-code` 就会真发短信（签名/端点/模板号都在 `application.yml`，无需配；AK 是唯一闸门，空则只打日志不发）。不想消耗真实短信量时，可用 dev token（项目里有发 dev token 的途径，见 AuthService）跳过登录，直接拿 JWT 调受保护接口、验证 GLM 生成链路。
 
 > **发码报 `5003` 时先看这两条**——都不是代码问题，是配置回流：
-> 1. 日志是 `isv.INVALID_PARAMETERS 签名或者模版无效` → 查有没有人往 `.env` 加回 `ALIYUN_SMS_SIGN`。非 ASCII 值经 `.env` 会被 properties 加载器按 ISO-8859-1 读成乱码，而阿里云的报错完全不提编码。`AliyunSmsAuthClient.warnIfMangled` 会在日志里直接给出修法。
-> 2. 日志是 `[SMS-STUB]`（压根没发） → 查 AK 是否为空，或有人往 `.env` 加了空的 `ALIYUN_SMS_TEMPLATE_*=`（空值会覆盖 yml 默认值）。
+> 1. 日志是 `isv.INVALID_PARAMETERS 签名或者模版无效` → 查有没有人往 `../../.env` 加回 `ALIYUN_SMS_SIGN`。非 ASCII 值经 `../../.env` 会被 properties 加载器按 ISO-8859-1 读成乱码，而阿里云的报错完全不提编码。`AliyunSmsAuthClient.warnIfMangled` 会在日志里直接给出修法。
+> 2. 日志是 `[SMS-STUB]`（压根没发） → 查 AK 是否为空，或有人往 `../../.env` 加了空的 `ALIYUN_SMS_TEMPLATE_*=`（空值会覆盖 yml 默认值）。
 
 ### 8.3 管理端登录
 ```bash
@@ -234,7 +234,7 @@ cd sks-ai && uv run pytest tests/test_script_gen.py -v
 | 现象 | 原因 / 解决 |
 |---|---|
 | Java 起来但调 AI 接口报连接错 | `SKS_AI_BASE_URL` 没设成 `http://localhost:8000`，还在用默认容器名 `sks-ai` |
-| Java 报 datasource 连不上 | pg 没起 / 端口没暴露（缺 override `5432:5432`）/ 账密与 `.env` 不符 |
+| Java 报 datasource 连不上 | pg 没起 / 端口没暴露（缺 override `5432:5432`）/ 账密与 `../../.env` 不符 |
 | Python 报 `authentication failed` 或连 `postgres:postgres` | `DATABASE_URL` 没设，落到了 config.py 的默认值 |
 | Python `/health` UP 但 RAG 调用挂 | `/health` 设计上不阻断；看启动日志 `init_pool failed` |
 | Flyway 报表已存在 / 版本错 | 多半是手改过库或删过 `flyway_schema_history`；本地可 `docker compose down -v` 清库重来（会丢数据）|

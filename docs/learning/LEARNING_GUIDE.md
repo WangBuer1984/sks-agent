@@ -35,7 +35,7 @@
 Docker 不往你电脑系统里装东西，而是**拉一个别人打包好的"镜像"(image)，跑成一个"容器"(container)**。镜像 = 只读模板（里面已经装好某软件），容器 = 镜像跑起来的活实例。一个镜像可以跑出很多容器，删容器不影响镜像。
 
 ### 在哪看
-`docker-compose.yml` 里两种引入方式：
+`../../docker-compose.yml` 里两种引入方式：
 ```yaml
 postgres:
   image: pgvector/pgvector:pg16      # 用现成镜像（第一次自动 docker pull）
@@ -119,7 +119,7 @@ uv = Python 版的 npm。干两件事：①按清单装依赖到一个隔离环�
 ### 在哪看
 - `sks-ai/pyproject.toml` = 依赖清单
 - `sks-ai/uv.lock` = 锁文件（精确版本，进 git）
-- `sks-ai/app/config.py` = Python 代码读配置（pydantic-settings 自动读 `.env`）
+- `sks-ai/app/config.py` = Python 代码读配置（pydantic-settings 自动读 `../../.env`）
 
 ### 动手做（在 `sks-ai/` 目录）
 ```bash
@@ -250,7 +250,7 @@ Nginx 在这套系统里干两件事：
 2. **托管静态文件**：前端的 `dist/` 给 nginx，nginx 直接把 HTML/JS/CSS 发给浏览器，不用经过 Java。
 
 ### 在哪看（重点）
-**配置文件就一个：`deploy/nginx/nginx.conf`**。改代理只改这一个文件。核心三段：
+**配置文件就一个：`../../deploy/nginx/nginx.conf`**。改代理只改这一个文件。核心三段：
 
 ① 反代 Java：
 ```nginx
@@ -275,11 +275,11 @@ location = /50x.html { root /usr/share/nginx/html; }
 ```
 
 ### 为什么 `proxy_pass http://sks-server:8080` 能用容器名当主机名？
-因为 `docker-compose.yml` 里所有服务在同一个 `sks-net` 网络下。Docker 内置 DNS 让容器之间能用容器名互访——`sks-server` 解析到 Java 容器的 IP。
+因为 `../../docker-compose.yml` 里所有服务在同一个 `sks-net` 网络下。Docker 内置 DNS 让容器之间能用容器名互访——`sks-server` 解析到 Java 容器的 IP。
 
 ### 改配置的流程
 因为 nginx 镜像是 `build:` 出来的、配置是 COPY 进镜像的，所以：
-1. 编辑 `deploy/nginx/nginx.conf`。
+1. 编辑 `../../deploy/nginx/nginx.conf`。
 2. 重建：`docker compose --env-file .env up -d --build nginx`。
 3. 验证：`curl localhost/api/health`。
 
@@ -316,10 +316,10 @@ npm install && npm run dev
 
 ---
 
-## Step 9 · `.env` 怎么流到各处
+## Step 9 · `../../.env` 怎么流到各处
 
 ### 概念
-密钥（DB 密码、GLM key、JWT secret…）不进 git，统一放根目录 `.env`（gitignored）。各服务通过不同机制读它：
+密钥（DB 密码、GLM key、JWT secret…）不进 git，统一放根目录 `../../.env`（gitignored）。各服务通过不同机制读它：
 
 | 在哪跑 | 机制 | .env 怎么进进程 |
 |---|---|---|
@@ -328,14 +328,14 @@ npm install && npm run dev
 | Java IDEA | `application-local.yml` 的 `spring.config.import` | Spring 把 .env 当属性源读 |
 | Python | `config.py` 的 pydantic-settings `env_file=".env"` | 直接读文件 |
 
-### .env 结构（看 `.env.example` 模板）
+### .env 结构（看 `../../.env.example` 模板）
 分四类：
 - **pg 读**：`POSTGRES_DB/USER/PASSWORD` —— pg 镜像首次启动建库建用户。
 - **Java 读**（经 Spring `${VAR:默认}` 占位符）：`JWT_SECRET_USER/ADMIN`、`SERVICE_TOKEN`、`ADMIN_SEED_*`、`TRIAL_CREDIT`、`ALIYUN_*`。
 - **Python 读**（经 pydantic）：`ZHIPU_API_KEY`、`TIKHUB_API_KEY`、`ALIYUN_*`。
 - **空值占位**：`ZHIPU_API_KEY=`（模板留空，真 .env 填真值，.env 不进 git）。
 
-占位符对应关系：`.env` 的 `JWT_SECRET_USER=fmrK...` ↔ `application.yml` 的 `${JWT_SECRET_USER:}` ↔ 代码的 `@Value("${JWT_SECRET_USER:}")`，**名字必须一一对应**。
+占位符对应关系：`../../.env` 的 `JWT_SECRET_USER=fmrK...` ↔ `application.yml` 的 `${JWT_SECRET_USER:}` ↔ 代码的 `@Value("${JWT_SECRET_USER:}")`，**名字必须一一对应**。
 
 ### 本地 IDEA 跑 Java 的配置方案
 
@@ -353,8 +353,8 @@ npm install && npm run dev
      ai:
        base-url: http://localhost:8000
    ```
-   > `[.properties]` 方括号必须有：Spring 按扩展名选加载器，`.env` 没对应加载器，不带方括号会静默跳过 → 密钥读不到。方括号强制按 properties 加载器读 .env。
-2. `.gitignore` 加 `**/application-local.yml`（含密钥，不进 git）。
+   > `[.properties]` 方括号必须有：Spring 按扩展名选加载器，`../../.env` 没对应加载器，不带方括号会静默跳过 → 密钥读不到。方括号强制按 properties 加载器读 .env。
+2. `../../.gitignore` 加 `**/application-local.yml`（含密钥，不进 git）。
 3. IDEA Run Config 激活 profile `local`：VM options 加 `-Dspring.profiles.active=local`。**不用填任何密钥环境变量。**
 
 ### 改 pg 密码的正确流程
@@ -396,7 +396,7 @@ Java JDBC 走 TCP（`jdbc:postgresql://localhost:5432`），才真校验密码�
 1. **Step 1-2（Docker）**：`docker ps/images/logs/exec`，进容器逛，建立"容器=隔离小机器"直觉。
 2. **Step 5（Flyway）+ Step 9（.env）**：搞清数据怎么来、密钥怎么传。
 3. **Step 3/4/6（uv/mvn/npm）**：会 `sync`/`install`/`run` 即可，细节用到再查。
-4. **Step 7（Nginx）**：读懂 `deploy/nginx/nginx.conf` 的 `location` + `proxy_pass`，知道改完要 `--build`。
+4. **Step 7（Nginx）**：读懂 `../../deploy/nginx/nginx.conf` 的 `location` + `proxy_pass`，知道改完要 `--build`。
 5. **Step 8**：串起来跑一次完整本地启动，每终端对应一个零件。
 
 每个 Step 后面都有「动手做」，建议真的敲一遍看预期输出——看十遍不如跑一遍。

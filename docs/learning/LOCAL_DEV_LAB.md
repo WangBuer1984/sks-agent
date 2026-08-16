@@ -2,7 +2,7 @@
 
 > 这份是**手把手踩坑实录**，记录 2026-07-25~26 从零把本地环境跑通的全过程。每个命令都带预期输出、每个坑都标了根因和修法。照着敲一遍就能复现。
 >
-> 配套：概念看 `docs/TOOLCHAIN_GUIDE.md`；本地运行速查看 `docs/LOCAL_DEV.md`；生产部署看 `deploy/OPS.md`。
+> 配套：概念看 `TOOLCHAIN_GUIDE.md`；本地运行速查看 `LOCAL_DEV.md`；生产部署看 `../../deploy/OPS.md`。
 
 ## 总览：最终目标状态
 
@@ -128,7 +128,7 @@ docker exec sks-postgres psql -U sks -d sks -c \
 
 ---
 
-## Step 9 · `.env` 怎么流到各处
+## Step 9 · `../../.env` 怎么流到各处
 
 ### 9.1 四种搬运机制（同一份 .env，不同地方生效方式不同）
 
@@ -139,14 +139,14 @@ docker exec sks-postgres psql -U sks -d sks -c \
 | Java IDEA | `application-local.yml` 的 `spring.config.import` | Spring 把 .env 当属性源读 |
 | Python | `config.py` 的 `pydantic-settings` `env_file=".env"` | 直接读文件 |
 
-### 9.2 .env 结构（看 `.env.example` 模板）
+### 9.2 .env 结构（看 `../../.env.example` 模板）
 分四类：
 - **pg 读**：`POSTGRES_DB/USER/PASSWORD` —— pg 镜像首次启动建库建用户。
 - **Java 读**（经 Spring `${VAR:默认}` 占位符）：`JWT_SECRET_USER/ADMIN`、`SERVICE_TOKEN`、`ADMIN_SEED_*`、`TRIAL_CREDIT`、`ALIYUN_*`。
 - **Python 读**（经 pydantic）：`ZHIPU_API_KEY`、`TIKHUB_API_KEY`、`ALIYUN_*`。
 - **空值占位**：`ZHIPU_API_KEY=`（模板留空，真 .env 填真值，.env 不进 git）。
 
-占位符对应关系：`.env` 的 `JWT_SECRET_USER=fmrK...` ↔ `application.yml` 的 `${JWT_SECRET_USER:}` ↔ `JwtConfig` 的 `@Value("${JWT_SECRET_USER:}")`，**名字必须一一对应**。
+占位符对应关系：`../../.env` 的 `JWT_SECRET_USER=fmrK...` ↔ `application.yml` 的 `${JWT_SECRET_USER:}` ↔ `JwtConfig` 的 `@Value("${JWT_SECRET_USER:}")`，**名字必须一一对应**。
 
 ### 9.3 改 pg 密码的正确流程
 
@@ -157,7 +157,7 @@ docker exec sks-postgres psql -U sks -d sks -c \
    ```bash
    docker exec sks-postgres psql -U sks -d sks -c "ALTER USER sks WITH PASSWORD '新密码';"
    ```
-2. 改 `.env` 的 `POSTGRES_PASSWORD=新密码`。
+2. 改 `../../.env` 的 `POSTGRES_PASSWORD=新密码`。
 3. 重启 **Java**（pg 不用重启，密码在库里已改）。
 
 **路径 B：推倒重来（本地学习用，生产绝不可）**
@@ -199,11 +199,11 @@ Java JDBC 走 TCP（`jdbc:postgresql://localhost:5432`），才真校验密码�
      ai:
        base-url: http://localhost:8000
    ```
-2. `.gitignore` 加 `**/application-local.yml`（含密钥，不进 git）。
+2. `../../.gitignore` 加 `**/application-local.yml`（含密钥，不进 git）。
 3. IDEA Run Config 激活 profile：VM options 加 `-Dspring.profiles.active=local`，或 Environment variables 填 `SPRING_PROFILES_ACTIVE=local`。**不用填任何密钥环境变量，不用 EnvFile。**
 
 ### 9.6 ⚠️ `[.properties]` 方括号是关键（踩出来的硬知识）
-`spring.config.import` 按文件扩展名选加载器，`.env` 没对应加载器。不带 `[.properties]` → `optional:` 静默跳过 → JWT_SECRET_USER 空 → `JwtConfig.guardSecret` 抛 `IllegalStateException` 拒绝启动：
+`spring.config.import` 按文件扩展名选加载器，`../../.env` 没对应加载器。不带 `[.properties]` → `optional:` 静默跳过 → JWT_SECRET_USER 空 → `JwtConfig.guardSecret` 抛 `IllegalStateException` 拒绝启动：
 ```
 JWT_SECRET_USER must be set to a real ≥32-byte secret (got blank/placeholder)
 ```
@@ -212,10 +212,10 @@ JWT_SECRET_USER must be set to a real ≥32-byte secret (got blank/placeholder)
 ### 9.7 JWT 密钥守卫
 `JwtConfig.java` 拒绝以下值启动（防弱密钥上线）：
 - 空 / blank
-- `.env.example` 占位符：`change_me_user_secret_min_32_bytes`、`change_me_admin_secret_min_32_bytes`
+- `../../.env.example` 占位符：`change_me_user_secret_min_32_bytes`、`change_me_admin_secret_min_32_bytes`
 - 历史硬编码回退：`user-secret-32bytes-xxxxxxxxxxxxx`、`admin-secret-32bytes-xxxxxxxxxxx`
 
-只要 `.env` 有真随机 ≥32 字节值 + `application-local.yml` 正确加载 .env，就能过。
+只要 `../../.env` 有真随机 ≥32 字节值 + `application-local.yml` 正确加载 .env，就能过。
 
 ### 9.8 启动成功的标志
 日志依次出现：
@@ -241,7 +241,7 @@ java -version                            # 确认默认是 21
 ```
 
 ### 1. 起 pg（唯一用 docker 的部分）
-建 `docker-compose.override.yml`（gitignored，本地自建）：
+建 `../../docker-compose.override.yml`（gitignored，本地自建）：
 ```yaml
 services:
   postgres:
@@ -277,7 +277,7 @@ uv sync
 uv run uvicorn app.main:app --reload --port 8000
 # 验证：curl localhost:8000/health → {"status":"UP"}
 ```
-> ⚠️ Python 的 `DATABASE_URL` **必须显式 export**——`.env` 里没这变量（compose 是用 environment 注入的），不设会落到 config.py 默认 `postgres:postgres` 连不上。
+> ⚠️ Python 的 `DATABASE_URL` **必须显式 export**——`../../.env` 里没这变量（compose 是用 environment 注入的），不设会落到 config.py 默认 `postgres:postgres` 连不上。
 
 ### 4. 起前端（终端）
 ```bash
@@ -313,7 +313,7 @@ vite proxy 默认 `/api → localhost:8080`，纯本地模式开箱即用，**�
 1. **Step 1（Docker）**：`docker ps/images/logs/exec`，进容器逛，建立"容器=隔离小机器"直觉。
 2. **Step 5（Flyway）+ Step 9（.env）**：搞清数据怎么来、密钥怎么传。
 3. **Step 3/4/6（uv/mvn/npm）**：会 `sync`/`install`/`run` 即可，细节用到再查。
-4. **Step 7（Nginx）**：读懂 `deploy/nginx/nginx.conf` 的 `location` + `proxy_pass`，知道改完要 `--build`。
+4. **Step 7（Nginx）**：读懂 `../../deploy/nginx/nginx.conf` 的 `location` + `proxy_pass`，知道改完要 `--build`。
 5. **完整启动**：按本文"完整本地启动顺序"跑一遍，每终端对应一个零件。
 
 每个坑都标了根因和修法，照着练，遇到问题先查"常见坑速查表"。

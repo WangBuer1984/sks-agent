@@ -2,7 +2,7 @@
 
 > 这份文档面向「这套工具链我都不熟」的同学。每个概念讲三件事：**它是什么 → 在这个仓库的哪里看 → 怎么动手验证**。建议按顺序一步步来，每步动手做完再进下一步。
 >
-> 配套阅读：本地调试运行见 `docs/LOCAL_DEV.md`；生产部署见 `deploy/OPS.md`。
+> 配套阅读：本地调试运行见 `LOCAL_DEV.md`；生产部署见 `../../deploy/OPS.md`。
 
 ## 0. 全景：这套系统由哪些零件组成
 
@@ -37,7 +37,7 @@ Docker 不往你电脑系统里装东西，而是**拉一个别人打包好的"�
 打个比方：镜像是菜谱+食材的预制菜包，容器是你把它加热出来的那盘菜。菜包可以反复加热出很多盘，删掉一盘不影响菜包。
 
 ### 在哪看
-`docker-compose.yml`：
+`../../docker-compose.yml`：
 ```yaml
 postgres:
   image: pgvector/pgvector:pg16      # 拉这个现成镜像
@@ -125,7 +125,7 @@ uv = Python 版的 npm。干两件事：①按清单装依赖到一个隔离环�
 ### 在哪看
 `sks-ai/pyproject.toml` = 依赖清单（声明要哪些库、可选范围）。
 `sks-ai/uv.lock` = 锁文件（精确到每个库每个版本，提交进 git）。
-`sks-ai/app/config.py` = Python 代码里读配置（`pydantic-settings` 自动读 `.env`）。
+`sks-ai/app/config.py` = Python 代码里读配置（`pydantic-settings` 自动读 `../../.env`）。
 
 ### 动手做（在 `sks-ai/` 目录）
 ```bash
@@ -264,7 +264,7 @@ Nginx 在这套系统里干两件事：
 > "反向"代理 vs "正向"代理：正向代理替**你**上网（你翻墙用的）；反向代理替**服务器**收请求（用户不知道后面有几个 Java）。这里 nginx 是反向代理。
 
 ### 在哪看（这是重点）
-**配置文件就一个：`deploy/nginx/nginx.conf`**。改代理只改这一个文件。
+**配置文件就一个：`../../deploy/nginx/nginx.conf`**。改代理只改这一个文件。
 
 核心三段：
 
@@ -290,7 +290,7 @@ error_page 500 502 503 504 /50x.html;
 ```
 
 ### 为什么 `proxy_pass http://sks-server:8080` 能用容器名当主机名？
-因为 `docker-compose.yml` 里所有服务都在同一个 `sks-net` 网络下（`networks: sks-net`）。Docker 内置 DNS 让容器之间能用容器名互访——`sks-server` 就解析到 Java 容器的 IP。
+因为 `../../docker-compose.yml` 里所有服务都在同一个 `sks-net` 网络下（`networks: sks-net`）。Docker 内置 DNS 让容器之间能用容器名互访——`sks-server` 就解析到 Java 容器的 IP。
 
 ### 动手做
 ```bash
@@ -307,7 +307,7 @@ curl localhost/api/health        # 应返回 {"status":"UP"}
 
 ### 改配置的流程（重要）
 因为 nginx 镜像是 `build:` 出来的、配置是 COPY 进镜像的，所以：
-1. 编辑 `deploy/nginx/nginx.conf`。
+1. 编辑 `../../deploy/nginx/nginx.conf`。
 2. 重建：`docker compose --env-file .env up -d --build nginx`。
 3. 验证：`curl localhost/api/health`。
 
@@ -353,16 +353,16 @@ npm run dev
 
 ---
 
-## Step 9 · 环境变量：`.env` 是怎么流到各处的
+## Step 9 · 环境变量：`../../.env` 是怎么流到各处的
 
 ### 概念
-密钥（DB 密码、GLM key、JWT secret…）不进 git，统一放根目录 `.env`（gitignored）。各服务通过不同机制读它：
+密钥（DB 密码、GLM key、JWT secret…）不进 git，统一放根目录 `../../.env`（gitignored）。各服务通过不同机制读它：
 - **Docker 容器**：compose 里 `env_file: .env`，整文件注入容器环境。
-- **Java**：Spring 不直接读 `.env`，靠 `application.yml` 里的 `${VAR:默认值}` 占位符读环境变量。
+- **Java**：Spring 不直接读 `../../.env`，靠 `application.yml` 里的 `${VAR:默认值}` 占位符读环境变量。
 - **Python**：`config.py` 用 `pydantic-settings`，`env_file=".env"` 直接读文件。
 
 ### 在哪看
-`.env.example` = 模板（无密钥）；`.env` = 真值（gitignored）。
+`../../.env.example` = 模板（无密钥）；`../../.env` = 真值（gitignored）。
 `application.yml` 里满眼 `${...}`：
 ```yaml
 url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/sks}
