@@ -166,15 +166,19 @@ bash deploy/backup/pg_restore_verify.sh /backup/sks-$(date +%F).sql.gz
 
 > **额度账本不可丢**——`pg_restore_verify.sh` 任一表缺失 → 退出 1。上线前必须跑通一次。详见 `OPS.md §2`。
 
-crontab 已在 `SERVER_INIT.md §7` 配好（每日 03:00 备份 + certbot 续期 post-hook）。
+crontab 已在 `SERVER_INIT.md §7` 配好（每日 03:00 备份）。证书续期用 `renew-cert.sh`（先停网关再签），不要裸跑 `certbot renew`。
 
 ### 证书续期
 
+签发是 standalone，续期时 **sks-nginx 占着 80**，直接 `certbot renew --dry-run` 会报 bind port 80。用脚本（失败也会把网关拉起来）：
+
 ```bash
-sudo certbot renew --dry-run    # 干跑验证续期流程
+sudo ./deploy/renew-cert.sh --dry-run
 ```
 
-certbot 续期后 nginx 不会自动 reload——`SERVER_INIT.md §7` crontab 的 post-hook 已加 `... restart nginx`。续期改的是宿主 `/etc/letsencrypt` 证书文件（只读挂载进容器），`docker compose restart nginx` 让容器重读。
+定时：`3 3 * * * /opt/sks/deploy/renew-cert.sh --quiet`（见 `SERVER_INIT.md` §7）。若系统装了 `/etc/cron.d/certbot`，注释掉里面的 `certbot renew`，否则会和网关抢 80。
+
+续期改的是宿主 `/etc/letsencrypt`；脚本 `start nginx` 让容器重读只读挂载的证书。
 
 ### 50x 兜底页可见性
 

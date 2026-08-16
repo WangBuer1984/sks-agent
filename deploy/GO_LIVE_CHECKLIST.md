@@ -69,7 +69,7 @@
 ## 2. 外部 / 控制台配置（无代码，详见 `deploy/OPS.md`）
 
 - [ ] **ACR**：本机 `./deploy/acr-sync.sh` 已把当前 tag 推到 `crpi-…personal.cr.aliyuncs.com/suikoushuo`；ECS `docker login --username=dingtalk_bakexx` VPC 域名；`.env` 的 `SKS_IMAGE_REGISTRY` 已填 VPC 前缀（**不要**在 ECS 上直拉 GHCR）
-- [ ] **certbot Let's Encrypt**：`sudo ./deploy/issue-cert.sh` 签 `suikoushuo.com` + `www.suikoushuo.com` 到 `/etc/letsencrypt/live/suikoushuo.com/` + 续期 crontab；网关走 `deploy/nginx/nginx.https.conf` + `docker-compose.prod.yml`（域名已写在 conf，不必 sed），`location /` 已是 `proxy_pass http://sks-web:80`、无 server 级 root/index；`certbot renew --dry-run` 通过。详见 `deploy/ALIYUN_DEPLOYMENT.md §2-3`
+- [ ] **certbot Let's Encrypt**：首次 `sudo ./deploy/issue-cert.sh`；续期 `sudo ./deploy/renew-cert.sh --dry-run` 通过（勿裸跑 `certbot renew`，80 被网关占用）。网关走 `nginx.https.conf` + prod compose。详见 `ALIYUN_DEPLOYMENT.md` §2
 - [ ] **安全组**：80/443 = `0.0.0.0/0`；22 仅你的 IP；**不要**开 3389。系统 nginx 已 `stop`+`disable`
 - [ ] **UptimeRobot**（免费版）：监控 `https://suikoushuo.com/api/health` 期望 `{"status":"UP"}`，5 分钟间隔，宕机 email + 短信
 - [ ] **`{{CONTACT_WECHAT}}` 替换**：部署的 `50x.html` 用 envsubst 替换为真实站长微信号（勿硬编码）

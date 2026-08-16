@@ -205,8 +205,8 @@ RETAIN_DAYS=30
 # 每日 03:00 备份（额度账本不可丢）
 0 3 * * * /opt/sks/deploy/backup/pg_backup.sh >> /var/log/sks-pg-backup.log 2>&1
 
-# certbot 续期后 reload 容器内 nginx（certbot 包通常已写 /etc/cron.d/certbot，这里补 post-hook）
-# 0 3 * * * /usr/bin/certbot renew --quiet --post-hook "docker compose -f /opt/sks/docker-compose.yml -f /opt/sks/docker-compose.prod.yml restart nginx"
+# certbot standalone 续期必须先停网关（不要用下面注释掉的旧 post-hook 写法）
+3 3 * * * /opt/sks/deploy/renew-cert.sh --quiet >> /var/log/sks-certbot-renew.log 2>&1
 ```
 
 ---

@@ -79,7 +79,7 @@ ACR 命名空间 `suikoushuo`（个人版北京）。公网 push / VPC pull 地�
 1. 宿主 `sudo ./deploy/issue-cert.sh` 签发（nginx 容器必须停，80 空闲；`suikoushuo.com` + `www.suikoushuo.com`）
 2. `docker compose -f docker-compose.yml -f docker-compose.prod.yml` 构建网关（build arg `NGINX_CONF=nginx.https.conf`，挂 `/etc/letsencrypt:ro`，开 443）
 
-续期：`sudo certbot renew --dry-run`；续期后要 reload 容器，post-hook 见 [`SERVER_INIT.md`](SERVER_INIT.md) §7。
+续期：`sudo ./deploy/renew-cert.sh --dry-run`（会先停网关再签；见 [`SERVER_INIT.md`](SERVER_INIT.md) §7）。不要裸跑 `certbot renew`。
 
 ## 2. 每日备份 — 宿主 crontab
 
@@ -92,8 +92,8 @@ crontab -e
 # 每日 03:00 备份（额度账本不可丢）
 0 3 * * * /opt/sks/deploy/backup/pg_backup.sh >> /var/log/sks-pg-backup.log 2>&1
 
-# certbot 续期后 reload 容器内 nginx
-# 0 3 * * * /usr/bin/certbot renew --quiet --post-hook "docker compose -f /opt/sks/docker-compose.yml -f /opt/sks/docker-compose.prod.yml restart nginx"
+# certbot standalone 续期必须先停网关（直接 `certbot renew` 会因 80 被占失败）
+3 3 * * * /opt/sks/deploy/renew-cert.sh --quiet >> /var/log/sks-certbot-renew.log 2>&1
 ```
 
 环境变量（写入 crontab 顶部或脚本调用方）：
