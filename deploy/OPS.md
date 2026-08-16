@@ -3,21 +3,21 @@
 > 本文记录<b>外部/控制台/宿主</b>侧的运维项——它们不是代码，无法单元测试，上线前由人按清单执行。
 > 代码侧产物见同目录 `nginx/`、`backup/` 与 sks-server 仓 `src/main/java/com/sks/common/QuotaWatchJob.java`。
 >
-> 裸机初始化（装 Docker / GHCR 登录 / 镜像加速器）见 [`SERVER_INIT.md`](SERVER_INIT.md)，本文不重复。
+> 裸机初始化（装 Docker / ACR 登录 / Docker Hub 加速器）见 [`SERVER_INIT.md`](SERVER_INIT.md)，本文不重复。
 > 首次上云见 [`ALIYUN_DEPLOYMENT.md`](ALIYUN_DEPLOYMENT.md)；上线清单见 [`GO_LIVE_CHECKLIST.md`](GO_LIVE_CHECKLIST.md)。
 >
-> <b>首次起栈前置</b>：`docker compose pull --ignore-buildable && docker compose up -d`（三服务走 GHCR 镜像，不再 `--build`）。若卡在拉镜像：ghcr.io 见 `SERVER_INIT.md` §4；Docker Hub 的 pgvector / nginx:alpine 见本文 §8。
+> <b>首次起栈前置</b>：本机 `./deploy/acr-sync.sh v0.1.1` 后，ECS `.env` 填 `SKS_IMAGE_REGISTRY`（VPC），再 `./deploy/deploy.sh all`。三服务走 ACR，gateway 本地 build。卡在拉镜像：三服务见 `SERVER_INIT.md` §4；pgvector / nginx:alpine 见本文 §8。
 
 ## 镜像化部署模型
 
-镜像化后，旧的「`--build` 全量构建」语义变了：三服务仓不 build 了，按 GHCR 镜像引用；gateway 仍本地 build。
+镜像化后，旧的「`--build` 全量构建」语义变了：三服务仓不 build 了，按 ACR 镜像引用（由 GHCR 同步）；gateway 仍本地 build。
 
 | 场景 | 新（镜像化） |
 |---|---|
-| 新增 Flyway 迁移生效 | sks-server 仓发新 tag → CI 出镜像 → deploy 仓 bump `sks-server.image` tag → `compose pull sks-server && compose up -d sks-server` |
-| 前端发版 | sks-web 仓发新 tag → CI 出镜像 → deploy 仓 bump `sks-web.image` tag → `pull sks-web && up -d sks-web` |
-| 重建/首次起栈 | `compose pull --ignore-buildable`（需 Compose v2.22+，老版本 fallback `compose pull sks-server sks-ai sks-web`）→ `compose up -d` |
-| 回滚部署 | deploy 仓把 `<svc>.image` tag 改回上一版 → `pull && up -d` |
+| 新增 Flyway 迁移生效 | sks-server 仓发新 tag → CI 出 GHCR 镜像 → 本机 `./deploy/acr-sync.sh <tag>` → deploy 仓 bump `docker-compose.yml` 三处 tag → ECS `git pull && ./deploy/deploy.sh sks-server` |
+| 前端发版 | 同上，目标换成 `sks-web` |
+| 重建/首次起栈 | 本机已 sync 当前 tag → ECS `./deploy/deploy.sh all` |
+| 回滚部署 | deploy 仓把 compose tag 改回上一版（ACR 上须已有该 tag）→ ECS `git pull && ./deploy/deploy.sh <svc>` |
 
 > **单服务重发不用连带重启 nginx。** 上面几行 `up -d <svc>` 会让该服务换个容器 IP。nginx 对
 > `proxy_pass` 里写死的主机名只在启动时解析一次并永久缓存，所以这原本会让网关一直 502、非重启
@@ -27,7 +27,38 @@
 >
 > 若哪天发现单服务重发后网关 502 不恢复，先查这两样是不是被改回去了。
 
-## 0. 联调-gated 项总览（代码留桩，上线/联调时接线）
+## 发版流水 — GHCR → ACR → ECS
+
+当前 compose 钉 **`v0.1.1`**。换版本（例如 `v0.1.2`）时：
+
+1. **确认 GHCR 三个仓都有该 tag**（`ghcr.io/wangbuer1984/sks-{server,ai,web}:<tag>`）。
+2. **本机同步到 ACR**（不要在 ECS 上拉 GHCR；Apple Silicon 脚本已强制 `linux/amd64`）：
+
+```bash
+docker login ghcr.io -u WangBuer1984
+docker login --username=dingtalk_bakexx \
+  crpi-7eu3mopdi4xg4ext.cn-beijing.personal.cr.aliyuncs.com
+./deploy/acr-sync.sh v0.1.2
+```
+
+3. **deploy 仓改 `docker-compose.yml` 三处** `:v0.1.1` → 新 tag（`acr-sync.sh` 的默认参数可一起改，传参即可不必改）。
+4. **ECS**（VPC 拉镜像，不计公网流量）：
+
+```bash
+# 首次或凭证过期
+docker login --username=dingtalk_bakexx \
+  crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com
+
+# .env 必须有（compose 插值）：
+# SKS_IMAGE_REGISTRY=crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com/suikoushuo
+
+git pull
+./deploy/deploy.sh all          # 或 ./deploy/deploy.sh sks-server
+```
+
+ACR 命名空间 `suikoushuo`（个人版北京）。公网 push / VPC pull 地址见 [`SERVER_INIT.md`](SERVER_INIT.md) §4。
+
+---
 
 | 项 | 留桩位置 | 联调动作 |
 |----|----------|----------|
@@ -35,7 +66,7 @@
 | 阿里云 SMS 余额查询 | `QuotaWatchJob.querySmsBalance` → `Optional.empty()` | 未接 BSS OpenAPI。告警邮件先不做，此项暂无出口 |
 | 智谱账户余额查询 | `QuotaWatchJob.queryGlmBalance` → `Optional.empty()` | 未接智谱余额 API。同上 |
 | certbot HTTPS | `nginx.https.conf` + `docker-compose.prod.yml` | 真实域名 + standalone 签发（见 [`ALIYUN_DEPLOYMENT.md`](ALIYUN_DEPLOYMENT.md) §2） |
-| UptimeRobot 拨测 | 无代码 | 控制台配 `https://域名/api/health`（见 §3） |
+| UptimeRobot 拨测 | 无代码 | 控制台配 `https://suikoushuo.com/api/health`（见 §3） |
 
 ---
 
@@ -45,9 +76,8 @@
 
 生产路径（逐步命令见 [`ALIYUN_DEPLOYMENT.md`](ALIYUN_DEPLOYMENT.md) §2–3）：
 
-1. 宿主 `certbot certonly --standalone` 签发（此时 nginx 容器必须停，80 空闲）
-2. `sed` 替换 `deploy/nginx/nginx.https.conf` 里的「你的域名」
-3. `docker compose -f docker-compose.yml -f docker-compose.prod.yml` 构建网关（build arg `NGINX_CONF=nginx.https.conf`，挂 `/etc/letsencrypt:ro`，开 443）
+1. 宿主 `sudo ./deploy/issue-cert.sh` 签发（nginx 容器必须停，80 空闲；`suikoushuo.com` + `www.suikoushuo.com`）
+2. `docker compose -f docker-compose.yml -f docker-compose.prod.yml` 构建网关（build arg `NGINX_CONF=nginx.https.conf`，挂 `/etc/letsencrypt:ro`，开 443）
 
 续期：`sudo certbot renew --dry-run`；续期后要 reload 容器，post-hook 见 [`SERVER_INIT.md`](SERVER_INIT.md) §7。
 
@@ -88,10 +118,10 @@ bash deploy/backup/pg_restore_verify.sh /backup/sks-YYYY-MM-DD.sql.gz
 
 ## 3. 外部拨测 — UptimeRobot（控制台配置，无代码）
 
-免费版监控 `https://域名/api/health`：
+免费版监控 `https://suikoushuo.com/api/health`：
 
 - 类型：HTTP(s)
-- URL：`https://你的域名/api/health`
+- URL：`https://suikoushuo.com/api/health`
 - 期望响应：`{"status":"UP"}`（`HealthController` 返回）
 - 间隔：5 min
 - 告警：邮件 +（可选）短信提醒——UptimeRobot 控制台配置，不在代码里
@@ -129,7 +159,7 @@ bash deploy/backup/pg_restore_verify.sh /backup/sks-YYYY-MM-DD.sql.gz
 
 ## 7. 验收清单（§5.2 全链路手动过一遍）
 
-- [ ] `curl -s https://域名/50x.html` 可见兜底页（503/502 触发 `error_page` 重定向）
+- [ ] `curl -s https://suikoushuo.com/50x.html`（以及 `https://www.suikoushuo.com/50x.html`）可见兜底页（503/502 触发 `error_page` 重定向）
 - [ ] `bash deploy/backup/pg_backup.sh` 产出 `.sql.gz` 且 `pg_restore_verify.sh` 跑通
 - [ ] 停掉 java 容器后 UptimeRobot 在 5 min 内告警
 

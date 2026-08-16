@@ -15,10 +15,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
                                           PostgreSQL 16 + pgvector ◀── (deploy 仓 compose 管，单库三合一)
 ```
 
-- **三服务仓**（各自 GHCR 镜像独立发版，硬不变量见各自 scoped CLAUDE.md）：
-  - sks-server（Java，唯一公网入口，鉴权/额度/CRUD/状态机）→ `ghcr.io/wangbuer1984/sks-server:<tag>`
-  - sks-ai（Python FastAPI+LangGraph，内网 AI 服务，不暴露公网）→ `ghcr.io/wangbuer1984/sks-ai:<tag>`
-  - sks-web（React SPA + nginx 静态服务）→ `ghcr.io/wangbuer1984/sks-web:<tag>`
+- **三服务仓**（各自 GHCR 独立发版，硬不变量见各自 scoped CLAUDE.md；生产 ECS 经 ACR 拉取）：
+  - sks-server（Java，唯一公网入口，鉴权/额度/CRUD/状态机）→ `ghcr.io/wangbuer1984/sks-server:<tag>` → ACR 同名仓库
+  - sks-ai（Python FastAPI+LangGraph，内网 AI 服务，不暴露公网）→ `ghcr.io/wangbuer1984/sks-ai:<tag>` → ACR 同名仓库
+  - sks-web（React SPA + nginx 静态服务）→ `ghcr.io/wangbuer1984/sks-web:<tag>` → ACR 同名仓库
 - **deploy 仓**（本仓）：`docker-compose.yml`（5 服务按镜像引用 + gateway 本地 build + postgres）、`.env`（单份全量，gitignored）、`deploy/nginx/`（gateway Dockerfile+nginx.conf+50x.html）、`deploy/*.md`（运维）、`docs/learning/`（学习笔记）。
 
 ## 指向各服务仓 scoped CLAUDE.md
@@ -48,7 +48,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 - **镜像 tag 钉具体版本**：compose 不用 `:latest`（本地缓存不更新），钉 `v0.1.0` 等。
 - **单 named 网络 `sks-net`**（compose 自动创建，无需 `docker network create`）；顶层 `volumes: sks-pgdata` 必须声明。
 - **`.env` 单份全量住本仓**，compose `env_file: .env` 注入 sks-server 与 sks-ai（sks-web 无 env）。`.env` 真值 gitignored 不进 git；模板见 `.env.example`（漏配短信 AK 则只落库不发）。
-- **GHCR private**：部署机 `docker login ghcr.io`（PAT `read:packages`）或把三 package 设 public。GHCR 国内可达性见 `deploy/SERVER_INIT.md`。
+- **生产镜像走 ACR**：compose `image` 为 `${SKS_IMAGE_REGISTRY:-ghcr.io/wangbuer1984}/sks-*:tag`。ECS `.env` 填 `SKS_IMAGE_REGISTRY=crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com/suikoushuo`；本机 `deploy/acr-sync.sh` 从 GHCR 同步到公网 ACR。pgvector / nginx:alpine 仍走 Docker Hub + 加速器。见 `deploy/SERVER_INIT.md` §4。
 
 ## 文档
 
@@ -59,7 +59,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 | 裸机一次性初始化 | `deploy/SERVER_INIT.md` |
 | 首次上云 | `deploy/ALIYUN_DEPLOYMENT.md` |
 | 发版脚本 | `deploy/deploy.sh` |
-| 运维（HTTPS / 备份 / 告警 / 镜像加速） | `deploy/OPS.md` |
+| GHCR→ACR 同步 | `deploy/acr-sync.sh` |
+| 运维（HTTPS / ACR 发版 / 备份 / 告警） | `deploy/OPS.md` |
 | 上线清单 | `deploy/GO_LIVE_CHECKLIST.md` |
 
 学习笔记在 `docs/learning/`（工具链与本地调试，不承载部署硬约束）。产品 PRD / 技术设计 / 契约在各服务仓，不在本仓。

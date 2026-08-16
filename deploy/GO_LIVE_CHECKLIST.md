@@ -66,8 +66,9 @@
 
 ## 2. 外部 / 控制台配置（无代码，详见 `deploy/OPS.md`）
 
-- [ ] **certbot Let's Encrypt**：真实域名签发证书到 `/etc/letsencrypt/live/<域名>/` + 续期 crontab；网关走 `deploy/nginx/nginx.https.conf` + `docker-compose.prod.yml`（sed 替换域名 + build arg `NGINX_CONF=nginx.https.conf`），`location /` 已是 `proxy_pass http://sks-web:80`、无 server 级 root/index；`certbot renew --dry-run` 通过。详见 `deploy/ALIYUN_DEPLOYMENT.md §2-3`
-- [ ] **UptimeRobot**（免费版）：监控 `https://<域名>/api/health` 期望 `{"status":"UP"}`，5 分钟间隔，宕机 email + 短信
+- [ ] **ACR**：本机 `./deploy/acr-sync.sh` 已把当前 tag 推到 `crpi-…personal.cr.aliyuncs.com/suikoushuo`；ECS `docker login --username=dingtalk_bakexx` VPC 域名；`.env` 的 `SKS_IMAGE_REGISTRY` 已填 VPC 前缀（**不要**在 ECS 上直拉 GHCR）
+- [ ] **certbot Let's Encrypt**：`sudo ./deploy/issue-cert.sh` 签 `suikoushuo.com` + `www.suikoushuo.com` 到 `/etc/letsencrypt/live/suikoushuo.com/` + 续期 crontab；网关走 `deploy/nginx/nginx.https.conf` + `docker-compose.prod.yml`（域名已写在 conf，不必 sed），`location /` 已是 `proxy_pass http://sks-web:80`、无 server 级 root/index；`certbot renew --dry-run` 通过。详见 `deploy/ALIYUN_DEPLOYMENT.md §2-3`
+- [ ] **UptimeRobot**（免费版）：监控 `https://suikoushuo.com/api/health` 期望 `{"status":"UP"}`，5 分钟间隔，宕机 email + 短信
 - [ ] **`{{CONTACT_WECHAT}}` 替换**：部署的 `50x.html` 用 envsubst 替换为真实站长微信号（勿硬编码）
 - [ ] **pg_backup crontab**：宿主 `0 3 * * * bash deploy/backup/pg_backup.sh`（只本机 `/backup`，30 天保留）
 - [ ] **restore-verify 上线前必做**：`bash deploy/backup/pg_restore_verify.sh <file>` 到 temp db `sks_verify` 关键表 count 通过（**额度账本不可丢**）

@@ -9,9 +9,9 @@
 #   ./deploy/deploy.sh --no-pull all    # 跳过镜像拉取，只 up
 #
 # 前提（首次部署前已完成，见 deploy/SERVER_INIT.md + deploy/ALIYUN_DEPLOYMENT.md）：
-#   - 服务器已装 docker + compose v2.22+、已 docker login ghcr.io、已配镜像加速器
+#   - 服务器已装 docker + compose v2.22+、已 docker login ACR、已配 Docker Hub 镜像加速器
 #   - 已 git clone 本仓到 COMPOSE_DIR，.env 已配实值（chmod 600）
-#   - certbot 已签发证书到 /etc/letsencrypt/live/<域名>/
+#   - certbot 已签发证书到 /etc/letsencrypt/live/suikoushuo.com/（含 www.suikoushuo.com）
 #
 # 本脚本恒走生产 compose（docker-compose.yml + docker-compose.prod.yml）——
 # prod override 让 nginx 用 nginx.https.conf 构建 + 挂 letsencrypt 卷 + 开 443。
@@ -30,7 +30,7 @@ cd "$REPO_DIR"
 COMPOSE_DIR="$REPO_DIR"
 
 COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.prod.yml)
-IMAGE_SERVICES=(sks-server sks-ai sks-web)   # 走 GHCR 镜像，pull 可用
+IMAGE_SERVICES=(sks-server sks-ai sks-web)   # 走 ACR（SKS_IMAGE_REGISTRY），pull 可用
 ALL_SERVICES=(postgres sks-server sks-ai sks-web nginx)
 
 # ── 颜色 / 日志 ───────────────────────────────────────────────────────────────
@@ -80,7 +80,7 @@ case "$TARGET" in
   all)
     log "全量更新：拉镜像（--ignore-buildable 跳过 nginx，它本地 build）"
     if (( DO_PULL )); then
-      dc pull --ignore-buildable || die "拉镜像失败——查 GHCR login / 镜像加速器 / 网络"
+      dc pull --ignore-buildable || die "拉镜像失败——查 .env SKS_IMAGE_REGISTRY / ACR login / Docker Hub 加速器"
     else
       warn "--no-pull：跳过拉镜像"
     fi
@@ -97,7 +97,7 @@ case "$TARGET" in
   sks-server|sks-ai|sks-web)
     log "单服务更新：$TARGET"
     if (( DO_PULL )); then
-      dc pull "$TARGET" || die "pull $TARGET 失败——查 tag 是否 bump、GHCR login"
+      dc pull "$TARGET" || die "pull $TARGET 失败——查 tag 是否 bump、ACR login、本机是否已 acr-sync"
     fi
     # --no-deps：不连带重启依赖（pg/sks-server 等），三服务各自独立部署互不连带。
     # nginx 的 resolver 127.0.0.11 valid=10s 会让换 IP 后 10s 内自愈，无需连带重启网关。

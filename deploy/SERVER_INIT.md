@@ -37,8 +37,9 @@
 
 ### 域名 + DNS
 
-- 备一个域名（如 `sks.example.com`），DNS 加 A 记录指向 ECS 公网 IP。
-- 证书用真实域名签发；certbot 验证需要 80 端口公网可达（见上安全组）。
+- 生产域名：`suikoushuo.com` 与 `www.suikoushuo.com`。
+- 两条都指向 ECS 公网 IP：裸域 A 记录；`www` 用 A 或 CNAME 均可。
+- 证书由 `deploy/issue-cert.sh` 一次签两个名字；certbot HTTP-01 验证需要 80 端口公网可达（见上安全组）。
 
 ---
 
@@ -94,15 +95,14 @@ newgrp docker   # 或重新登录生效
 
 ## 3. 阿里云镜像加速器（Docker Hub 被墙）
 
-compose up 要拉 Docker Hub 的 `pgvector/pgvector:pg16`、`nginx:alpine`（三服务镜像走 ghcr.io，不吃 Docker Hub mirror）。
+compose up 要拉 Docker Hub 的 `pgvector/pgvector:pg16`、`nginx:alpine`（三服务走 ACR，不吃 Docker Hub mirror）。
 国内直连 `registry-1.docker.io` 会卡在 `failed to resolve source metadata`。
 
 ```bash
 # 先确认是否被墙（reset by peer = 被墙）
 curl -sS -o /dev/null -w '%{http_code}\n' --max-time 8 https://registry-1.docker.io/v2/ || echo unreachable
 ```
-
-去阿里云控制台：**容器镜像服务 → 镜像工具 → 镜像加速器**，复制专属地址（形如 `https://<your-id>.mirror.aliyuncs.com`）。
+去阿里云控制台：**容器镜像服务 → 镜像工具 → 镜像加速器**，复制专属地址`https://b86dcmgv.mirror.aliyuncs.com`。
 
 服务器是**原生 dockerd**（不是 colima / Docker Desktop），配 `/etc/docker/daemon.json`：
 
@@ -110,7 +110,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' --max-time 8 https://registry-1.docker
 sudo mkdir -p /etc/docker
 sudo tee /etc/docker/daemon.json <<'EOF'
 {
-  "registry-mirrors": ["https://<your-id>.mirror.aliyuncs.com"]
+  "registry-mirrors": ["https://b86dcmgv.mirror.aliyuncs.com"]
 }
 EOF
 sudo systemctl restart docker
@@ -123,20 +123,43 @@ docker info | grep -iA3 'Registry Mirrors'
 
 ---
 
-## 4. GHCR 认证（拉三服务镜像）
+## 4. 阿里云 ACR（三服务镜像；ECS 不要直拉 GHCR）
 
-三服务镜像是 GHCR private package。两种方式任选：
+三服务发版仍推 `ghcr.io/wangbuer1984/sks-{server,ai,web}`。国内 ECS 拉 GHCR 常只有十几 kB/s，生产改从**同地域个人版 ACR**拉。`pgvector` / `nginx:alpine` 仍走 Docker Hub + §3 加速器。
 
-- **方式 A（推荐）**：GitHub PAT `read:packages` 权限，`docker login ghcr.io -u <github-user>` 交互输入 PAT。
-- **方式 B**：把三个 package 设 public（GitHub → Packages → 对应包 → settings → change visibility），免 login。
+已开通：命名空间 `suikoushuo`，地域华北2（北京）。`sks-server` / `sks-ai` / `sks-web` 三个仓库须都在这个命名空间（不要再用旧的 `suishuoshuo`）。
+
+| 谁 | Registry | 用途 |
+|---|---|---|
+| 本机 | `crpi-7eu3mopdi4xg4ext.cn-beijing.personal.cr.aliyuncs.com` | push（公网） |
+| ECS | `crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com` | pull（VPC，不计公网流量） |
+
+登录用户名：`dingtalk_bakexx`；密码在控制台「访问凭证」，不是阿里云登录密码。
+
+**本机同步（能较快访问 GitHub 的机器，不要在 ECS 上 pull GHCR）：**
 
 ```bash
-# 预验：整条链通不通（拉小型公共 GHCR 镜像）
-docker pull ghcr.io/astral-sh/uv:latest && echo "GHCR 通"
+docker login ghcr.io -u WangBuer1984
+docker login --username=dingtalk_bakexx \
+  crpi-7eu3mopdi4xg4ext.cn-beijing.personal.cr.aliyuncs.com
 
-# 认证（方式 A）
-docker login ghcr.io -u WangBuer1984    # 输入 PAT
+./deploy/acr-sync.sh v0.1.1
 ```
+
+**ECS 只登录 ACR VPC（替代原来的 `docker login ghcr.io`）：**
+
+```bash
+docker login --username=dingtalk_bakexx \
+  crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com
+```
+
+`.env` 里：
+
+```
+SKS_IMAGE_REGISTRY=crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com/suikoushuo
+```
+
+compose 会拉 `…/suikoushuo/sks-{server,ai,web}:v0.1.1`。
 
 ---
 
@@ -149,7 +172,7 @@ sudo dnf install -y certbot
 # python3-certbot-nginx 可选——我们不用它的自动改配置，但装上不影响
 ```
 
-签发在首次部署时做（见 `ALIYUN_DEPLOYMENT.md §2`），这里只装好 certbot 本体。
+签发在首次部署时做：`sudo ./deploy/issue-cert.sh`（见 `ALIYUN_DEPLOYMENT.md §2`），签 `suikoushuo.com` + `www.suikoushuo.com`。这里只装好 certbot 本体。
 
 ---
 
@@ -200,9 +223,8 @@ RETAIN_DAYS=30
 
 ```bash
 docker --version && docker compose version    # docker 装好，compose ≥ v2.22
-docker info | grep -iA3 'Registry Mirrors'    # 镜像加速器生效
-docker pull ghcr.io/astral-sh/uv:latest       # GHCR 通
-docker login ghcr.io -u WangBuer1984          # 已认证（或 package 已 public）
+docker info | grep -iA3 'Registry Mirrors'    # Docker Hub 加速器生效（pgvector / nginx）
+docker login --username=dingtalk_bakexx crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com
 which certbot                                 # certbot 装好
 sudo firewall-cmd --list-services            # http https 都在
 ls /opt/sks/docker-compose.yml                # 仓已克隆

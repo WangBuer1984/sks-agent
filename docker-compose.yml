@@ -18,7 +18,7 @@ services:
       retries: 10
 
   sks-server:
-    image: ghcr.io/wangbuer1984/sks-server:v0.1.0
+    image: ${SKS_IMAGE_REGISTRY:-ghcr.io/wangbuer1984}/sks-server:v0.1.1
     container_name: sks-server
     restart: unless-stopped
     env_file:
@@ -45,7 +45,7 @@ services:
       start_period: 30s
 
   sks-ai:
-    image: ghcr.io/wangbuer1984/sks-ai:v0.1.0
+    image: ${SKS_IMAGE_REGISTRY:-ghcr.io/wangbuer1984}/sks-ai:v0.1.1
     container_name: sks-ai
     restart: unless-stopped
     env_file:
@@ -72,7 +72,7 @@ services:
       start_period: 20s
 
   sks-web:
-    image: ghcr.io/wangbuer1984/sks-web:v0.1.0
+    image: ${SKS_IMAGE_REGISTRY:-ghcr.io/wangbuer1984}/sks-web:v0.1.1
     container_name: sks-web
     restart: unless-stopped
     networks:
