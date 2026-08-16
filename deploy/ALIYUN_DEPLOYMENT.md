@@ -1,9 +1,9 @@
 # 随口说 · 阿里云完整部署文档（首次部署）
 
 > 本文是**首次完整部署**的端到端 runbook：从配 `.env` → 签发证书 → 起栈 → HTTPS 网关 → 验收 → 监控/备份接线。
-> 前提：服务器已按 [`SERVER_INIT.md`](SERVER_INIT.md) 初始化完成（docker、compose v2.22+、Docker Hub 加速器、ACR 登录、certbot、仓库已克隆）。
+> 前提：服务器已按 [`SERVER_INIT.md`](SERVER_INIT.md) 初始化完成（docker、compose v2.22+、ACR 登录、certbot、仓库已克隆）。
 > 后续每次发版部署走 [`deploy.sh`](deploy.sh)，本文只覆盖**首次**。
-> 深度运维项（超时链、备份脚本、余额监控、联调首检）见 [`OPS.md`](OPS.md) / [`GO_LIVE_CHECKLIST.md`](GO_LIVE_CHECKLIST.md)，本文不重复。
+> 2026-08-17 生产已通：`http://suikoushuo.com/` → 301；`https://suikoushuo.com/api/health` → `{"status":"UP"}`；裸域 / www / `/50x.html` 均为 200。
 
 ## 架构与端口
 
@@ -56,17 +56,17 @@ nginx.https.conf 的证书路径已钉 `/etc/letsencrypt/live/suikoushuo.com/`�
 **standalone 模式**（certbot 临时占 80 → nginx 容器必须停）：
 
 ```bash
-# DNS：suikoushuo.com 与 www.suikoushuo.com 都指向本机公网 IP
-# （www 用 A 或 CNAME 均可）；安全组 80 已放行
-# 若栈已在跑：先停网关
-docker compose -f docker-compose.yml -f docker-compose.prod.yml stop nginx
+# DNS（没有 dig 用 getent）
+getent hosts suikoushuo.com www.suikoushuo.com
+# 应解析到本机公网 IP。安全组 80 必须 0.0.0.0/0（Let's Encrypt 不走你的 SSH IP）
+
+# 80 必须空：系统 nginx 先停掉；栈已在跑则停网关
+sudo systemctl stop nginx 2>/dev/null || true
+sudo systemctl disable nginx 2>/dev/null || true
+docker compose -f docker-compose.yml -f docker-compose.prod.yml stop nginx 2>/dev/null || true
+ss -lnt | grep ':80 ' || echo '80 空闲'
 
 sudo ./deploy/issue-cert.sh
-# 等价于：
-# sudo certbot certonly --standalone --expand \
-#   -d suikoushuo.com -d www.suikoushuo.com \
-#   --non-interactive --agree-tos -m 15169128616@163.com
-
 sudo ls /etc/letsencrypt/live/suikoushuo.com/
 # 期望：fullchain.pem  privkey.pem  chain.pem  cert.pem
 ```
@@ -84,7 +84,7 @@ grep -q "$CONTACT_WECHAT" deploy/nginx/50x.html && echo "50x 联系方式已替�
 
 # nginx.https.conf 语法自检（挂临时目录 + 真 cert 路径；单文件 bind-mount 在部分引擎会报 not a directory）
 tmp=$(mktemp -d) && cp deploy/nginx/nginx.https.conf "$tmp/default.conf"
-docker run --rm -v "$tmp:/etc/nginx/conf.d:ro" -v /etc/letsencrypt:/etc/letsencrypt:ro nginx:alpine nginx -t
+docker run --rm -v "$tmp:/etc/nginx/conf.d:ro" -v /etc/letsencrypt:/etc/letsencrypt:ro docker.m.daocloud.io/library/nginx:alpine nginx -t
 rm -rf "$tmp"
 ```
 
@@ -113,7 +113,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ./deploy/deploy.sh all
 ```
 
-> 首次起栈 sks-server 会跑 Flyway 建表（`kb_card` / `analyze_task` / 额度账本等），给 30s start_period。`docker compose ps` 等 5 容器全 healthy。
+> 首次起栈 sks-server 会跑 Flyway（30s start_period）。`sks-web` 健康检查用 `wget -qO /dev/null http://127.0.0.1/`——**不要**改回 `wget --spider`（Alpine busybox 不支持，容器其实健康也会被判 unhealthy，网关起不来）。`docker compose ps` 等 5 容器全 healthy。
 
 ---
 
@@ -209,13 +209,14 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 | 现象 | 排查 |
 |---|---|
-| nginx 起不来、`nginx -t` 报 `cannot load certificate` | certbot 没签发 / 证书不在 `/etc/letsencrypt/live/suikoushuo.com/` / `/etc/letsencrypt` 没挂进容器（查 prod override volume） |
-| 502 Bad Gateway | 上游容器没起 / 容器名解析问题——查 `docker compose ps` 是否全 healthy；nginx 日志 `docker compose logs nginx`；resolver 127.0.0.11 是否还在 conf（被人改回写死主机名） |
-| healthcheck 一直 unhealthy | 探的是 `127.0.0.1/50x.html`——80 块是否保留了 `location = /50x.html`（被改成纯 301 跳转会失效） |
-| `/api/health` 通但 AI 调用超时 | 查超时链 240<270<300 是否被改（`OPS.md §6`）；sks-ai 日志；GLM/TikHub key 是否配 |
-| 短信不真发 | `.env` 是否误加了 `ALIYUN_SMS_*` 空行覆盖 yml（SMS 陷阱）；`ALIYUN_ACCESS_KEY_ID/SECRET` 是否配 |
-| 拉镜像卡住 / 十几 kB/s | 三服务应走 ACR VPC：查 `.env` 的 `SKS_IMAGE_REGISTRY`、ECS 是否 `docker login` 了 `crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com`、本机是否已 `acr-sync.sh`。pgvector/nginx 才吃 Docker Hub 加速器（`docker info \| grep Mirrors`，`OPS.md §8`） |
-| certbot 验证失败 | 80 公网不通（安全组 + firewalld 两层）；`suikoushuo.com` 或 `www.suikoushuo.com` DNS 没指向本机 |
+| nginx 起不来、`nginx -t` 报 `cannot load certificate` | certbot 没签发 / 缺 `/etc/letsencrypt/live/suikoushuo.com/fullchain.pem` / letsencrypt 卷没挂进容器 |
+| 502 Bad Gateway | 上游没起 / 容器名解析——`docker compose ps`；nginx 日志；resolver 127.0.0.11 是否被改回写死主机名 |
+| healthcheck 一直 unhealthy | 网关探 `/50x.html`：80 块是否被改成纯 301。`sks-web` 探 `/`：Alpine 必须 `wget -qO /dev/null http://127.0.0.1/`，不能 `--spider` |
+| certbot 验证失败 Timeout | 安全组 80 必须 `0.0.0.0/0`；系统/容器占 80；云防火墙 / 网络 ACL。DNS 用 `getent hosts`。firewalld 未运行不是原因 |
+| certbot「80 已被占用」 | `ss -lntp \| grep :80`：系统 nginx → `systemctl stop/disable nginx`；`sks-nginx` → compose stop nginx |
+| `/api/health` 通但 AI 调用超时 | 超时链 240<270<300（`OPS.md §6`）；sks-ai 日志；GLM/TikHub key |
+| 短信不真发 | `.env` 误加空的 `ALIYUN_SMS_*`；未配 `ALIYUN_ACCESS_KEY_ID/SECRET` |
+| 拉镜像卡住 / `registry-1.docker.io` 超时 | 三服务走 ACR VPC。postgres/nginx 必须是 DaoCloud 地址（已写在 compose/Dockerfile），不要直拉 Docker Hub |
 
 ---
 

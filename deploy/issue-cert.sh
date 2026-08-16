@@ -5,8 +5,8 @@
 # 用法（服务器上，nginx 未占 80）：
 #   sudo ./deploy/issue-cert.sh
 #
-# 已起栈时先停网关：
-#   docker compose -f docker-compose.yml -f docker-compose.prod.yml stop nginx
+# 已起栈时先停网关；系统预装 nginx 则：
+#   sudo systemctl stop nginx && sudo systemctl disable nginx
 set -euo pipefail
 
 DOMAIN=suikoushuo.com
@@ -19,7 +19,11 @@ if ! command -v certbot >/dev/null; then
 fi
 
 if ss -lnt 2>/dev/null | grep -q ':80 '; then
-  echo "80 端口已被占用。若是本仓 nginx，先：" >&2
+  echo "80 端口已被占用。查是谁：" >&2
+  echo "  ss -lntp | grep ':80 '" >&2
+  echo "系统 nginx（进程名 nginx、不是 docker-proxy）：" >&2
+  echo "  sudo systemctl stop nginx && sudo systemctl disable nginx" >&2
+  echo "本仓网关：" >&2
   echo "  docker compose -f docker-compose.yml -f docker-compose.prod.yml stop nginx" >&2
   exit 1
 fi

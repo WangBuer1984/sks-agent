@@ -3,10 +3,10 @@
 > 本文记录<b>外部/控制台/宿主</b>侧的运维项——它们不是代码，无法单元测试，上线前由人按清单执行。
 > 代码侧产物见同目录 `nginx/`、`backup/` 与 sks-server 仓 `src/main/java/com/sks/common/QuotaWatchJob.java`。
 >
-> 裸机初始化（装 Docker / ACR 登录 / Docker Hub 加速器）见 [`SERVER_INIT.md`](SERVER_INIT.md)，本文不重复。
+> 裸机初始化（装 Docker / ACR 登录）见 [`SERVER_INIT.md`](SERVER_INIT.md)，本文不重复。
 > 首次上云见 [`ALIYUN_DEPLOYMENT.md`](ALIYUN_DEPLOYMENT.md)；上线清单见 [`GO_LIVE_CHECKLIST.md`](GO_LIVE_CHECKLIST.md)。
 >
-> <b>首次起栈前置</b>：本机 `./deploy/acr-sync.sh v0.1.1` 后，ECS `.env` 填 `SKS_IMAGE_REGISTRY`（VPC），再 `./deploy/deploy.sh all`。三服务走 ACR，gateway 本地 build。卡在拉镜像：三服务见 `SERVER_INIT.md` §4；pgvector / nginx:alpine 见本文 §8。
+> <b>首次起栈前置</b>：本机 `./deploy/acr-sync.sh v0.1.1` 后，ECS `.env` 填 `SKS_IMAGE_REGISTRY`（VPC），再 `./deploy/deploy.sh all`。三服务走 ACR；postgres / 网关基础镜像走 DaoCloud。卡在拉镜像：三服务见 `SERVER_INIT.md` §4。
 
 ## 镜像化部署模型
 
@@ -90,10 +90,10 @@ ACR 命名空间 `suikoushuo`（个人版北京）。公网 push / VPC pull 地�
 crontab -e
 
 # 每日 03:00 备份（额度账本不可丢）
-0 3 * * * /path/to/sks-agent/deploy/backup/pg_backup.sh >> /var/log/sks-pg-backup.log 2>&1
+0 3 * * * /opt/sks/deploy/backup/pg_backup.sh >> /var/log/sks-pg-backup.log 2>&1
 
-# certbot 续期（certbot 安装时已自动写入，一般无需手动加；此处仅备忘）
-# 0 3 * * * /usr/bin/certbot renew --quiet --post-hook "docker compose --project-directory /path/to/sks-agent restart nginx"
+# certbot 续期后 reload 容器内 nginx
+# 0 3 * * * /usr/bin/certbot renew --quiet --post-hook "docker compose -f /opt/sks/docker-compose.yml -f /opt/sks/docker-compose.prod.yml restart nginx"
 ```
 
 环境变量（写入 crontab 顶部或脚本调用方）：
@@ -102,7 +102,7 @@ crontab -e
 BACKUP_DIR=/backup
 SPRING_DATASOURCE_USERNAME=sks
 PG_DB_NAME=sks
-COMPOSE_DIR=/path/to/sks-agent
+COMPOSE_DIR=/opt/sks
 RETAIN_DAYS=30
 ```
 
@@ -133,7 +133,7 @@ bash deploy/backup/pg_restore_verify.sh /backup/sks-YYYY-MM-DD.sql.gz
 `nginx/50x.html` 文案 verbatim PRD §11.6：
 > 服务暂时不可用，已记录。加站长微信 XXX 反馈，确认属实补偿额度。
 
-`XXX` 为占位 `{{CONTACT_WECHAT}}`，上线前用真实站长微信号替换（**不要把真实微信号硬编码进 git**）。生产在服务器工作副本上 envsubst，步骤见 [`ALIYUN_DEPLOYMENT.md`](ALIYUN_DEPLOYMENT.md) §3b。
+`XXX` 为占位 `{{CONTACT_WECHAT}}`，上线前用真实站长微信号替换（**不要把真实微信号硬编码进 git**）。生产在服务器工作副本上 envsubst，步骤见 [`ALIYUN_DEPLOYMENT.md`](ALIYUN_DEPLOYMENT.md) §3。
 
 ## 5. 余额监控 — QuotaWatchJob（代码侧）
 
@@ -163,10 +163,11 @@ bash deploy/backup/pg_restore_verify.sh /backup/sks-YYYY-MM-DD.sql.gz
 - [ ] `bash deploy/backup/pg_backup.sh` 产出 `.sql.gz` 且 `pg_restore_verify.sh` 跑通
 - [ ] 停掉 java 容器后 UptimeRobot 在 5 min 内告警
 
-## 8. 镜像加速器（首次起栈网络前置 — Docker Hub 被墙）
+## 8. Docker Hub（本地开发机；生产已不依赖）
 
-镜像化后 compose up 拉的是 **ghcr.io 三服务镜像**（不吃 Docker Hub mirror）+ Docker Hub 的 `pgvector/pgvector:pg16`、`nginx:alpine`（gateway 本地 build，吃 mirror）。原"拉三个 Docker Hub 基础镜像 node/python/temurin"已作废——node/python/temurin 已 bake 进 GHCR 服务镜像。
-在无法直连 `registry-1.docker.io` 的网络（典型：中国大陆）下，Docker Hub 的 pgvector/nginx:alpine 会卡在 `failed to resolve source metadata`；ghcr.io 预验见 [`SERVER_INIT.md`](SERVER_INIT.md) §4。
+生产 compose 已钉 DaoCloud：`docker.m.daocloud.io/pgvector/pgvector:pg16` 与 `docker.m.daocloud.io/library/nginx:alpine`。三服务走 ACR。ECS 起栈**不必**配 `registry-mirrors`。
+
+本节只给**本机**（colima / Docker Desktop）若仍要直拉 Docker Hub 时用。阿里云加速器经常仍访问 `registry-1.docker.io` 拿 token，国内会超时。
 
 诊断 + 配阿里云加速器（每账号唯一地址，<b>本文档只记 key 名/步骤，不含地址值</b>）：
 

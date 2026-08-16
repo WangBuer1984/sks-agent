@@ -13,7 +13,7 @@
 | 证书脚本 | `sudo ./deploy/issue-cert.sh`（Let's Encrypt，邮箱 `15169128616@163.com`） |
 | 三服务镜像 | 个人版 ACR 命名空间 `suikoushuo`，compose 当前 tag **`v0.1.1`** |
 | ECS 拉镜像 | VPC：`crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com` |
-| Docker Hub 加速器 | 只给 `pgvector` / `nginx:alpine`：`https://b86dcmgv.mirror.aliyuncs.com` |
+| 基础镜像 | DaoCloud：`pgvector/pgvector:pg16`、`nginx:alpine`（compose / Dockerfile 已写死，不走 Docker Hub） |
 
 ---
 
@@ -45,13 +45,13 @@ LLM 走云端 API（智谱 GLM），服务器不吃显存。吃资源的是 sks-
 | 80 | 0.0.0.0/0 | certbot 验证 + 80→443 |
 | 443 | 0.0.0.0/0 | HTTPS（唯一对外服务面） |
 
-不开 5432 / 8080 / 8000（只在容器网 `sks-net`）。
+不开 5432 / 8080 / 8000（只在容器网 `sks-net`）。**不要**开 3389（Linux 无 RDP）。22 不要对 `0.0.0.0/0`。
 
 ### 域名 + DNS
 
 - `suikoushuo.com` A 记录 → 本机公网 IP。
 - `www.suikoushuo.com` A 或 CNAME → 同一台机器。
-- certbot HTTP-01 要 80 公网可达（安全组 + 下面 firewalld 两层都开）。
+- certbot HTTP-01 要 **安全组 80 = 0.0.0.0/0**（Let's Encrypt 校验机不在你的 IP 白名单里）。本机 firewalld 未运行也可以，公网入站以安全组为准。
 
 ---
 
@@ -59,20 +59,37 @@ LLM 走云端 API（智谱 GLM），服务器不吃显存。吃资源的是 sks-
 
 ```bash
 sudo dnf update -y
+# Aliyun Linux 默认没有 git / dig
 sudo dnf install -y git curl wget vim tar
 sudo timedatectl set-timezone Asia/Shanghai
 ```
 
-### 防火墙（firewalld）
+查 DNS 用 `getent hosts suikoushuo.com`（不必装 `dig`）。
+
+### 宿主机 nginx（必停）
+
+Aliyun 镜像常预装系统 nginx，会占 80。不关掉则 `issue-cert.sh` 和 compose 网关都会失败：
 
 ```bash
-sudo systemctl enable --now firewalld
-sudo firewall-cmd --permanent --add-service=http    # 80
-sudo firewall-cmd --permanent --add-service=https   # 443
-sudo firewall-cmd --reload
+sudo systemctl stop nginx 2>/dev/null || true
+sudo systemctl disable nginx 2>/dev/null || true
+ss -lnt | grep ':80 ' || echo '80 空闲'
 ```
 
-安全组和 firewalld **两层都要放行**，少一层就会超时。
+公网 80/443 只交给 compose 里的 `sks-nginx`。
+
+### 防火墙（firewalld，可选）
+
+本次生产机 **firewalld 未运行**，证书和 HTTPS 仍通——入站只靠安全组。
+
+若要启用，必须**先放行 http/https 再 start**，否则会把 80 封死、Let's Encrypt 超时：
+
+```bash
+sudo firewall-cmd --permanent --add-service=http
+sudo firewall-cmd --permanent --add-service=https
+sudo systemctl enable --now firewalld
+sudo firewall-cmd --reload
+```
 
 ---
 
@@ -101,25 +118,16 @@ newgrp docker
 
 ---
 
-## 3. Docker Hub 加速器（只加速 pgvector / nginx）
+## 3. 基础镜像（pg / 网关）走 DaoCloud，不要直拉 Docker Hub
 
-三服务镜像走 ACR，**不吃**这个加速器。`pgvector/pgvector:pg16` 和 `nginx:alpine` 仍来自 Docker Hub，国内直连会卡在 `failed to resolve source metadata`。
+`docker-compose.yml` 的 postgres 和 `deploy/nginx/Dockerfile` 的 `FROM` 已钉：
 
-```bash
-sudo mkdir -p /etc/docker
-sudo tee /etc/docker/daemon.json <<'EOF'
-{
-  "registry-mirrors": ["https://b86dcmgv.mirror.aliyuncs.com"]
-}
-EOF
-sudo systemctl restart docker
-docker info | grep -iA3 'Registry Mirrors'
-# 期望出现 https://b86dcmgv.mirror.aliyuncs.com/
-```
+- `docker.m.daocloud.io/pgvector/pgvector:pg16`
+- `docker.m.daocloud.io/library/nginx:alpine`
 
-> colima / Docker Desktop 配法不同，见 `OPS.md` §8。这台 ECS 只认 `/etc/docker/daemon.json`。
->
-> **不要**在 ECS 上 `docker pull ghcr.io/...` 做预验——GHCR 从这台机常只有十几 kB/s，通不通改用下面 ACR 登录验证。
+三服务仍走 ACR。ECS **不必**再配 Docker Hub `registry-mirrors`（阿里云加速器经常仍要访问 `registry-1.docker.io` 拿 token，一样超时）。
+
+> **不要**在 ECS 上 `docker pull ghcr.io/...` 做预验——GHCR 从这台机常只有十几 kB/s。三服务通不通用下面 ACR 登录验证。
 
 ---
 
@@ -158,7 +166,8 @@ SKS_IMAGE_REGISTRY=crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com
 sudo dnf install -y certbot
 ```
 
-签发在仓克隆之后、nginx 起来之前：`sudo ./deploy/issue-cert.sh`（签裸域 + www，证书目录 `/etc/letsencrypt/live/suikoushuo.com/`）。步骤见 [`ALIYUN_DEPLOYMENT.md`](ALIYUN_DEPLOYMENT.md) §2。
+签发在仓克隆之后、**80 空闲**（系统 nginx 已 disable、compose 网关未起或已 stop）时：`sudo ./deploy/issue-cert.sh`。
+证书目录 `/etc/letsencrypt/live/suikoushuo.com/`。Let's Encrypt 超时先查安全组 80 是否 `0.0.0.0/0`，不是本机 firewalld。步骤见 [`ALIYUN_DEPLOYMENT.md`](ALIYUN_DEPLOYMENT.md) §2。
 
 ---
 
@@ -173,7 +182,7 @@ cd /opt/sks
 
 SSH 克隆也可以（`git@github.com:WangBuer1984/sks-agent.git`），需先配 deploy key 或 PAT。
 
-[`deploy.sh`](deploy.sh) 会自己找仓根。确认 `git log -1` 已包含 ACR / `issue-cert.sh` 那次提交后再往下走。
+[`deploy.sh`](deploy.sh) 会自己找仓根。`git clone` 前必须已 `dnf install git`。
 
 ---
 
@@ -206,11 +215,9 @@ RETAIN_DAYS=30
 
 ```bash
 docker --version && docker compose version
-docker info | grep -iA3 'Registry Mirrors'
 docker login --username=dingtalk_bakexx \
   crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com
 which certbot
-sudo firewall-cmd --list-services     # 应有 http https
 ls /opt/sks/docker-compose.yml /opt/sks/deploy/issue-cert.sh
 ```
 

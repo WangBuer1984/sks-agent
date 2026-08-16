@@ -10,7 +10,8 @@
 
 以下在 `docker compose pull --ignore-buildable && docker compose up -d` 后已端到端验证：
 
-- ✅ 5 容器全 healthy（postgres / sks-server / sks-ai / sks-web / nginx，sks-server/sks-ai/sks-web 为 GHCR 镜像，gateway 本地 build）
+- ✅ 5 容器全 healthy（postgres / sks-server / sks-ai / sks-web / nginx）。本地联调三服务默认可走 GHCR；**生产 ECS 走 ACR**（`SKS_IMAGE_REGISTRY`），gateway 本地 build
+- ✅ **生产公网（2026-08-17）**：`https://suikoushuo.com/api/health` → `{"status":"UP"}`；裸域与 www 首页 200；`/50x.html` 200；HTTP 301 → HTTPS
 - ✅ `GET /api/health`（经 nginx）→ `{"status":"UP"}`
 - ✅ `curl /50x.html` → 200（兜底页可达）
 - ✅ 注册流：send-code（未配 AK，码落库）→ 登录 → `isNew` 触发体验额度钩子 → `GET /api/user/me` balance=3
@@ -28,6 +29,7 @@
 
 | Key | 状态 | 说明 / 联调动作 |
 |---|---|---|
+| `SKS_IMAGE_REGISTRY` | — | **生产必填** `crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com/suikoushuo`。本地不设则 compose 默认 GHCR |
 | `POSTGRES_DB` / `POSTGRES_USER` | ✅ | `sks` / `sks` |
 | `POSTGRES_PASSWORD` | ⚠️ `change_me` | 本地能跑；prod 须换强密码（含 pg_backup 恢复链路） |
 | `JWT_SECRET_USER` | ✅ | 64 字符随机（JwtConfig guard 通过，登录验签过）；prod 可轮换 |
@@ -68,6 +70,7 @@
 
 - [ ] **ACR**：本机 `./deploy/acr-sync.sh` 已把当前 tag 推到 `crpi-…personal.cr.aliyuncs.com/suikoushuo`；ECS `docker login --username=dingtalk_bakexx` VPC 域名；`.env` 的 `SKS_IMAGE_REGISTRY` 已填 VPC 前缀（**不要**在 ECS 上直拉 GHCR）
 - [ ] **certbot Let's Encrypt**：`sudo ./deploy/issue-cert.sh` 签 `suikoushuo.com` + `www.suikoushuo.com` 到 `/etc/letsencrypt/live/suikoushuo.com/` + 续期 crontab；网关走 `deploy/nginx/nginx.https.conf` + `docker-compose.prod.yml`（域名已写在 conf，不必 sed），`location /` 已是 `proxy_pass http://sks-web:80`、无 server 级 root/index；`certbot renew --dry-run` 通过。详见 `deploy/ALIYUN_DEPLOYMENT.md §2-3`
+- [ ] **安全组**：80/443 = `0.0.0.0/0`；22 仅你的 IP；**不要**开 3389。系统 nginx 已 `stop`+`disable`
 - [ ] **UptimeRobot**（免费版）：监控 `https://suikoushuo.com/api/health` 期望 `{"status":"UP"}`，5 分钟间隔，宕机 email + 短信
 - [ ] **`{{CONTACT_WECHAT}}` 替换**：部署的 `50x.html` 用 envsubst 替换为真实站长微信号（勿硬编码）
 - [ ] **pg_backup crontab**：宿主 `0 3 * * * bash deploy/backup/pg_backup.sh`（只本机 `/backup`，30 天保留）

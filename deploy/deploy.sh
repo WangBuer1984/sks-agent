@@ -9,7 +9,7 @@
 #   ./deploy/deploy.sh --no-pull all    # 跳过镜像拉取，只 up
 #
 # 前提（首次部署前已完成，见 deploy/SERVER_INIT.md + deploy/ALIYUN_DEPLOYMENT.md）：
-#   - 服务器已装 docker + compose v2.22+、已 docker login ACR、已配 Docker Hub 镜像加速器
+#   - 服务器已装 docker + compose v2.22+、已 docker login ACR
 #   - 已 git clone 本仓到 COMPOSE_DIR，.env 已配实值（chmod 600）
 #   - certbot 已签发证书到 /etc/letsencrypt/live/suikoushuo.com/（含 www.suikoushuo.com）
 #
@@ -64,12 +64,10 @@ docker compose version >/dev/null 2>&1 || die "未装 compose 插件（硬依赖
 [[ -f .env ]] || die "缺 .env（从 deploy/.env.prod.example 拷贝并填实值；见 ALIYUN_DEPLOYMENT.md）"
 [[ -f docker-compose.yml ]] || die "不在 sks-agent 仓根？缺 docker-compose.yml"
 
-# 证书存在性（nginx https 起来的硬前提；单服务非 nginx 部署不强制，但首次必须有）
-shopt -s nullglob
-certs=(/etc/letsencrypt/live/*)
-shopt -u nullglob
-if [[ ${#certs[@]} -eq 0 ]] && { [[ "$TARGET" == "all" ]] || [[ "$TARGET" == "nginx" ]]; }; then
-  die "/etc/letsencrypt/live/ 下无证书——nginx 起不来。先 certbot 签发（见 ALIYUN_DEPLOYMENT.md §2）"
+# 证书存在性（nginx https 起来的硬前提）。live/ 下常有 README，不能只看目录非空。
+CERT=/etc/letsencrypt/live/suikoushuo.com/fullchain.pem
+if [[ ! -f "$CERT" ]] && { [[ "$TARGET" == "all" ]] || [[ "$TARGET" == "nginx" ]]; }; then
+  die "缺 $CERT ——nginx 起不来。先 sudo ./deploy/issue-cert.sh（80 须空闲，见 ALIYUN_DEPLOYMENT.md §2）"
 fi
 
 # ── 定义 compose 命令前缀 ─────────────────────────────────────────────────────
@@ -80,7 +78,7 @@ case "$TARGET" in
   all)
     log "全量更新：拉镜像（--ignore-buildable 跳过 nginx，它本地 build）"
     if (( DO_PULL )); then
-      dc pull --ignore-buildable || die "拉镜像失败——查 .env SKS_IMAGE_REGISTRY / ACR login / Docker Hub 加速器"
+      dc pull --ignore-buildable || die "拉镜像失败——查 .env SKS_IMAGE_REGISTRY / ACR login / DaoCloud（pgvector、nginx）"
     else
       warn "--no-pull：跳过拉镜像"
     fi

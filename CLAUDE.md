@@ -41,14 +41,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 
 ## 关键约束（deploy 仓侧）
 
-- **gateway 不镜像化**：本地 build（`nginx:alpine` + `nginx.conf` / `nginx.https.conf` + `50x.html`），无 CI/registry。改网关 = `compose build nginx && up -d nginx`（生产带 `docker-compose.prod.yml`）。
+- **gateway 不镜像化**：本地 build（`docker.m.daocloud.io/library/nginx:alpine` + `nginx.conf` / `nginx.https.conf` + `50x.html`），无 CI/registry。改网关 = `compose build nginx && up -d nginx`（生产带 `docker-compose.prod.yml`）。
 - **gateway 配置基于现文件改，勿整体覆盖**——保留承重注释（`/50x.html` 可直访、超时链、resolver + 变量 `proxy_pass`、`{{CONTACT_WECHAT}}`）。
 - **生产 TLS 走 `nginx.https.conf` + `docker-compose.prod.yml`**，不要在 `nginx.conf` 里取消 443 注释块（那块 80 纯 301 会让 healthcheck 探 `/50x.html` 失败）。`nginx.https.conf` 的 443 `location /` 必须反代 `sks-web:80`，不可 `try_files`、不可 server 级 root。详见 `deploy/ALIYUN_DEPLOYMENT.md`。
 - **gateway healthcheck 探 `/50x.html`**（不探 `/`——`/` 反代 sks-web 会耦合 sks-web 健康状态，违背独立部署）。
-- **镜像 tag 钉具体版本**：compose 不用 `:latest`（本地缓存不更新），钉 `v0.1.0` 等。
+- **镜像 tag 钉具体版本**：compose 不用 `:latest`（本地缓存不更新），钉 `v0.1.1` 等。
 - **单 named 网络 `sks-net`**（compose 自动创建，无需 `docker network create`）；顶层 `volumes: sks-pgdata` 必须声明。
 - **`.env` 单份全量住本仓**，compose `env_file: .env` 注入 sks-server 与 sks-ai（sks-web 无 env）。`.env` 真值 gitignored 不进 git；模板见 `.env.example`（漏配短信 AK 则只落库不发）。
-- **生产镜像走 ACR**：compose `image` 为 `${SKS_IMAGE_REGISTRY:-ghcr.io/wangbuer1984}/sks-*:tag`。ECS `.env` 填 `SKS_IMAGE_REGISTRY=crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com/suikoushuo`；本机 `deploy/acr-sync.sh` 从 GHCR 同步到公网 ACR。pgvector / nginx:alpine 仍走 Docker Hub + 加速器。见 `deploy/SERVER_INIT.md` §4。
+- **生产镜像走 ACR**：compose `image` 为 `${SKS_IMAGE_REGISTRY:-ghcr.io/wangbuer1984}/sks-*:tag`。ECS `.env` 填 `SKS_IMAGE_REGISTRY=crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com/suikoushuo`；本机 `deploy/acr-sync.sh` 从 GHCR 同步到公网 ACR。`pgvector` / 网关基础镜像钉 DaoCloud（`docker.m.daocloud.io/...`），不走 Docker Hub。见 `deploy/SERVER_INIT.md` §4。
 
 ## 文档
 

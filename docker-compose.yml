@@ -1,6 +1,7 @@
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    # Docker Hub 国内不可达；钉 DaoCloud 公共镜像（与官方 pgvector/pgvector:pg16 同内容）
+    image: docker.m.daocloud.io/pgvector/pgvector:pg16
     container_name: sks-postgres
     restart: unless-stopped
     environment:
@@ -80,10 +81,12 @@ services:
     expose:
       - "80"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost/ || exit 1"]
+      # alpine/busybox wget 没有 --spider；用 127.0.0.1 避免 localhost 走 IPv6
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1/ || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 10s
 
   nginx:
     build:
@@ -101,10 +104,11 @@ services:
     networks:
       - sks-net
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/50x.html || exit 1"]
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1/50x.html || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 5s
 
 networks:
   sks-net:
