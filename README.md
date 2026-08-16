@@ -34,3 +34,9 @@ docker compose ps                              # 5 容器全 healthy
 ```
 
 详见 `deploy/OPS.md`、`deploy/GO_LIVE_CHECKLIST.md`。
+
+## 阿里云部署（服务器）
+
+- 裸机一次性初始化：[`deploy/SERVER_INIT.md`](deploy/SERVER_INIT.md)
+- 首次完整部署：[`deploy/ALIYUN_DEPLOYMENT.md`](deploy/ALIYUN_DEPLOYMENT.md)
+- 后续每次发版部署：`deploy/deploy.sh`（用法 `./deploy/deploy.sh [all|sks-server|sks-ai|sks-web|nginx]`）
