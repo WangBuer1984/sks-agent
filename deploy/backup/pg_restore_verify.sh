@@ -15,6 +15,9 @@ if [ -z "$file" ] || [ ! -f "$file" ]; then
 fi
 
 COMPOSE_DIR="${COMPOSE_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
+# 与 deploy.sh 一致恒走 prod compose（见 pg_backup.sh 同款注释）。
+COMPOSE_FILES=(-f "$COMPOSE_DIR/docker-compose.yml" -f "$COMPOSE_DIR/docker-compose.prod.yml")
+dc() { docker compose "${COMPOSE_FILES[@]}" --project-directory "$COMPOSE_DIR" "$@"; }
 DB_USER="${SPRING_DATASOURCE_USERNAME:-sks}"
 VERIFY_DB="${VERIFY_DB:-sks_verify}"
 
@@ -22,26 +25,26 @@ VERIFY_DB="${VERIFY_DB:-sks_verify}"
 TABLES=(app_user credit_account credit_ledger script kb_card topic analyze_task)
 
 echo "[pg_restore_verify] creating temp db $VERIFY_DB (drop if exists) ..."
-docker compose --project-directory "$COMPOSE_DIR" exec -T postgres \
+dc exec -T postgres \
     psql -U "$DB_USER" -d postgres -c "DROP DATABASE IF EXISTS $VERIFY_DB;" >/dev/null
-docker compose --project-directory "$COMPOSE_DIR" exec -T postgres \
+dc exec -T postgres \
     psql -U "$DB_USER" -d postgres -c "CREATE DATABASE $VERIFY_DB;" >/dev/null
 
 echo "[pg_restore_verify] restoring $file -> $VERIFY_DB ..."
-gunzip -c "$file" | docker compose --project-directory "$COMPOSE_DIR" exec -T postgres \
+gunzip -c "$file" | dc exec -T postgres \
     psql -U "$DB_USER" -d "$VERIFY_DB" -v ON_ERROR_STOP=1 >/dev/null
 
 echo "[pg_restore_verify] sanity counts (空库也合法——只验证表结构存在 + 查询不报错):"
 fail=0
 for tbl in "${TABLES[@]}"; do
-    cnt=$(docker compose --project-directory "$COMPOSE_DIR" exec -T postgres \
+    cnt=$(dc exec -T postgres \
         psql -U "$DB_USER" -d "$VERIFY_DB" -tAc "SELECT count(*) FROM $tbl;" 2>/dev/null || echo "ERR")
     printf "  %-16s %s\n" "$tbl" "$cnt"
     [ "$cnt" = "ERR" ] && fail=1
 done
 
 echo "[pg_restore_verify] dropping temp db $VERIFY_DB ..."
-docker compose --project-directory "$COMPOSE_DIR" exec -T postgres \
+dc exec -T postgres \
     psql -U "$DB_USER" -d postgres -c "DROP DATABASE $VERIFY_DB;" >/dev/null
 
 if [ "$fail" -eq 1 ]; then

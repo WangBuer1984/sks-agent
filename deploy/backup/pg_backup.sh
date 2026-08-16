@@ -17,6 +17,11 @@ DB_USER="${SPRING_DATASOURCE_USERNAME:-sks}"
 DB_NAME="${PG_DB_NAME:-sks}"
 # docker-compose.yml 所在目录（-T 非交互 exec 用）
 COMPOSE_DIR="${COMPOSE_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
+# 与 deploy.sh 一致恒走 prod compose（-f prod override）。exec 按项目名 + 服务名找运行中的
+# postgres 容器——prod override 只改 nginx（build arg + letsencrypt 卷 + 443），postgres 服务
+# 定义与项目名都不变，故本地联调（即使没用 prod override 起栈）也能命中。
+COMPOSE_FILES=(-f "$COMPOSE_DIR/docker-compose.yml" -f "$COMPOSE_DIR/docker-compose.prod.yml")
+dc() { docker compose "${COMPOSE_FILES[@]}" --project-directory "$COMPOSE_DIR" "$@"; }
 OSS_BUCKET="${OSS_BUCKET:-}"              # 联调：未设 OSS_BUCKET → 跳过远端上传，仅留本地
 RETAIN_DAYS="${RETAIN_DAYS:-30}"
 
@@ -27,7 +32,7 @@ file="$BACKUP_DIR/sks-$stamp.sql.gz"
 
 echo "[pg_backup] dumping to $file ..."
 # -T: disable TTY (non-interactive)；pg_dump 输出经 gzip 落盘
-docker compose --project-directory "$COMPOSE_DIR" exec -T postgres \
+dc exec -T postgres \
     pg_dump -U "$DB_USER" "$DB_NAME" 2>/dev/null | gzip > "$file"
 
 # sanity：文件非空（pg_dump 失败 / 容器未起 → 空文件）
