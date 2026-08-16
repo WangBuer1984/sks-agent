@@ -19,7 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
   - sks-server（Java，唯一公网入口，鉴权/额度/CRUD/状态机）→ `ghcr.io/wangbuer1984/sks-server:<tag>`
   - sks-ai（Python FastAPI+LangGraph，内网 AI 服务，不暴露公网）→ `ghcr.io/wangbuer1984/sks-ai:<tag>`
   - sks-web（React SPA + nginx 静态服务）→ `ghcr.io/wangbuer1984/sks-web:<tag>`
-- **deploy 仓**（本仓）：`docker-compose.yml`（5 服务按镜像引用 + gateway 本地 build + postgres）、`.env`（单份全量，gitignored）、`deploy/nginx/`（gateway Dockerfile+nginx.conf+50x.html）、`docs/`（PRD/tech-design/MVP plan/学习文档/拆分 spec+plan）。
+- **deploy 仓**（本仓）：`docker-compose.yml`（5 服务按镜像引用 + gateway 本地 build + postgres）、`.env`（单份全量，gitignored）、`deploy/nginx/`（gateway Dockerfile+nginx.conf+50x.html）、`deploy/*.md`（运维）、`docs/learning/`（学习笔记）。
 
 ## 指向各服务仓 scoped CLAUDE.md
 
@@ -41,17 +41,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 
 ## 关键约束（deploy 仓侧）
 
-- **gateway 不镜像化**：本地 build（`nginx:alpine + 两文件` nginx.conf + 50x.html），无 CI/registry。改 gateway = `compose build nginx && up -d nginx`。
-- **gateway nginx.conf 编辑基于现文件，勿整体覆盖**——保留三条承重注释（不加 internal+curl 验收 / 超时链后果「假 AI_FAILED→误退款」/ `{{CONTACT_WECHAT}}` 替换指引）。见拆分 spec §3.4。
-- **443 注释块陷阱**：启用 TLS 时 443 块 `location /` 必须是 `proxy_pass http://sks-web:80`（不可保留旧 try_files，gateway 无 dist → `/` 直接 404 全站黑）；server 级 root/index 删。见 GO_LIVE_CHECKLIST certbot 项 + 拆分 spec §3.4。
+- **gateway 不镜像化**：本地 build（`nginx:alpine` + `nginx.conf` / `nginx.https.conf` + `50x.html`），无 CI/registry。改网关 = `compose build nginx && up -d nginx`（生产带 `docker-compose.prod.yml`）。
+- **gateway 配置基于现文件改，勿整体覆盖**——保留承重注释（`/50x.html` 可直访、超时链、resolver + 变量 `proxy_pass`、`{{CONTACT_WECHAT}}`）。
+- **生产 TLS 走 `nginx.https.conf` + `docker-compose.prod.yml`**，不要在 `nginx.conf` 里取消 443 注释块（那块 80 纯 301 会让 healthcheck 探 `/50x.html` 失败）。`nginx.https.conf` 的 443 `location /` 必须反代 `sks-web:80`，不可 `try_files`、不可 server 级 root。详见 `deploy/ALIYUN_DEPLOYMENT.md`。
 - **gateway healthcheck 探 `/50x.html`**（不探 `/`——`/` 反代 sks-web 会耦合 sks-web 健康状态，违背独立部署）。
 - **镜像 tag 钉具体版本**：compose 不用 `:latest`（本地缓存不更新），钉 `v0.1.0` 等。
 - **单 named 网络 `sks-net`**（compose 自动创建，无需 `docker network create`）；顶层 `volumes: sks-pgdata` 必须声明。
-- **`.env` 单份全量住本仓**，compose `env_file: .env` 注入 sks-server 与 sks-ai（sks-web 无 env）。`.env` 真值 gitignored 不进 git；模板见 `.env.example`（按拆分 spec §4 枚举，漏配 SMS/MAIL 走 stub 静默不发，靠枚举兜底）。
-- **GHCR private**：部署机 `docker login ghcr.io`（PAT `read:packages`）或把三 package 设 public。GHCR 国内可达性见 OPS.md「部署机初始化」预验。
+- **`.env` 单份全量住本仓**，compose `env_file: .env` 注入 sks-server 与 sks-ai（sks-web 无 env）。`.env` 真值 gitignored 不进 git；模板见 `.env.example`（漏配短信 AK 则只落库不发）。
+- **GHCR private**：部署机 `docker login ghcr.io`（PAT `read:packages`）或把三 package 设 public。GHCR 国内可达性见 `deploy/SERVER_INIT.md`。
 
 ## 文档
 
-- 拆分 spec：`docs/superpowers/specs/2026-07-28-sks-ai-split-design.md`
-- 拆分实施计划：`docs/superpowers/plans/2026-07-29-sks-agent-split.md`
-- 产品/技术设计：`随口说PRD .md`、`docs/superpowers/specs/2026-07-19-suikoushuo-tech-design.md`、`docs/superpowers/plans/2026-07-19-suikoushuo-mvp.md`（路径按拆分前 monorepo 布局，现分属三服务仓）
+日常部署看 `README.md` 与 `deploy/`：
+
+| 场景 | 文档 |
+|---|---|
+| 裸机一次性初始化 | `deploy/SERVER_INIT.md` |
+| 首次上云 | `deploy/ALIYUN_DEPLOYMENT.md` |
+| 发版脚本 | `deploy/deploy.sh` |
+| 运维（HTTPS / 备份 / 告警 / 镜像加速） | `deploy/OPS.md` |
+| 上线清单 | `deploy/GO_LIVE_CHECKLIST.md` |
+
+学习笔记在 `docs/learning/`（工具链与本地调试，不承载部署硬约束）。产品 PRD / 技术设计 / 契约在各服务仓，不在本仓。

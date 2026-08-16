@@ -41,11 +41,10 @@ chmod 600 .env  # 密钥文件，限权
 
 `.env.prod.example` 已按三类标注：① 复制自本地（付费 key）/ ② 生成强值 / ③ 填 prod 专值。**必读其中的 SMS 陷阱注释**：
 
-> ⚠️ **别往 `.env` 加 `ALIYUN_SMS_SIGN` / `_ENDPOINT` / `_TEMPLATE_*` 三行**——签名/端点/模板号已写死在 sks-server `application.yml` 的 `sks.sms.*`。在 `.env` 留一行空 `XXX=` 会覆盖 yml 的 `${VAR:默认值}` → 短信静默退回 stub、不发也不报错。短信「真发 or stub」的唯一闸门 = `ALIYUN_ACCESS_KEY_ID/SECRET` 两项。
+> ⚠️ **别往 `.env` 加 `ALIYUN_SMS_SIGN` / `_ENDPOINT` / `_TEMPLATE_*` 三行**——签名/端点/模板号已写死在 sks-server `application.yml` 的 `sks.sms.*`。在 `.env` 留一行空 `XXX=` 会覆盖 yml 的 `${VAR:默认值}` → 验证码只落库不发、也不报错。闸门 = `ALIYUN_ACCESS_KEY_ID/SECRET`：配了真发。
 
 逐项核对见 `GO_LIVE_CHECKLIST.md §1`（状态表 ✅/⚠️/❌）。关键非默认项：
 - `ALIYUN_ASR_KEY`（百炼/DashScope，长转写已切 Qwen，prod 必填，否则拆视频/拆账号失败）
-- `SPRING_MAIL_*` + `SKS_ALERT_ADMIN_EMAIL`（告警邮件，空走 stub 静默不发）
 
 ---
 
@@ -145,7 +144,6 @@ curl -s -o /dev/null -w '%{http_code}\n' https://你的域名/   # 200
 - [ ] §4.3 precheck 不扣费：`/api/analyze/account` 失败 → 余额不变
 - [ ] 管理端：`/api/admin/auth/login` admin/密码 → token；admin token 访 C 端 401（双密钥隔离）
 - [ ] 拆视频/拆账号（Qwen 长转写出非空 transcript；需 `ALIYUN_ASR_KEY` + 镜像含 ffmpeg/node）
-- [ ] 告警邮件：`QuotaWatchJob` 手测（阈值调极高）→ 站长邮箱收信
 
 ---
 

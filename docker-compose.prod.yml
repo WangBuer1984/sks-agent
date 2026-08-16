@@ -9,7 +9,7 @@
 #   3. 开 443 端口——base compose 只开了 80（本地 80-only 够用）；ports 是合并去重，80 仍在。
 #
 # 前置：certbot 必须先签发证书到 /etc/letsencrypt/live/<域名>/，否则 nginx -t 起不来。
-# 顺序见 deploy/OPS.md「上线 certbot」段。
+# 顺序见 deploy/ALIYUN_DEPLOYMENT.md §2。
 services:
   nginx:
     build:

@@ -16,7 +16,7 @@ docker compose pull --ignore-buildable   # 需 Compose v2.22+；老版本 docker
 docker compose up -d                     # 按 depends_on 起：pg → sks-server(Flyway)/sks-web → sks-ai → nginx(gateway)
 ```
 
-## 启动顺序（§5.4）
+## 启动顺序
 
 compose `depends_on` 自动保证：postgres → sks-server(等 pg healthy, Flyway 起时跑) → sks-ai(等 sks-server healthy, Flyway 跑完=表已建)；sks-web 独立；nginx（gateway，等 sks-server + sks-web healthy）。手动分批：先 postgres，后 sks-server/sks-web（并行），后 sks-ai，最后 nginx。
 
@@ -33,10 +33,13 @@ curl -s -o /dev/null -w '%{http_code}' localhost/50x.html  # 200（兜底页）
 docker compose ps                              # 5 容器全 healthy
 ```
 
-详见 `deploy/OPS.md`、`deploy/GO_LIVE_CHECKLIST.md`。
+## 文档
 
-## 阿里云部署（服务器）
-
-- 裸机一次性初始化：[`deploy/SERVER_INIT.md`](deploy/SERVER_INIT.md)
-- 首次完整部署：[`deploy/ALIYUN_DEPLOYMENT.md`](deploy/ALIYUN_DEPLOYMENT.md)
-- 后续每次发版部署：`deploy/deploy.sh`（用法 `./deploy/deploy.sh [all|sks-server|sks-ai|sks-web|nginx]`）
+| 场景 | 看哪份 |
+|---|---|
+| 裸机一次性初始化 | [`deploy/SERVER_INIT.md`](deploy/SERVER_INIT.md) |
+| 首次上云 | [`deploy/ALIYUN_DEPLOYMENT.md`](deploy/ALIYUN_DEPLOYMENT.md) |
+| 后续发版 | `deploy/deploy.sh`（`./deploy/deploy.sh all` 或指定 `sks-server` / `sks-ai` / `sks-web` / `nginx`） |
+| 运维（HTTPS / 备份 / 告警） | [`deploy/OPS.md`](deploy/OPS.md) |
+| 上线清单 | [`deploy/GO_LIVE_CHECKLIST.md`](deploy/GO_LIVE_CHECKLIST.md) |
+| 学习工具链 / 本地调试 | [`docs/learning/`](docs/learning/) |

@@ -28,3 +28,6 @@ docker-compose.override.yml
 .idea/
 .vscode/
 .DS_Store
+
+# 本地 SDD / agent 过程稿，不进仓
+.superpowers/

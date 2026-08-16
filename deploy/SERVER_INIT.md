@@ -170,7 +170,7 @@ cd /opt/sks
 
 ## 7. crontab（备份 + 证书续期）
 
-宿主 crontab 触发 pg 备份（容器内不装 cron，与 CLAUDE.md「无 K8s/无 MQ」一致）。
+宿主 crontab 触发 pg 备份（容器内不装 cron）。
 
 ```bash
 crontab -e
@@ -191,7 +191,6 @@ BACKUP_DIR=/backup
 SPRING_DATASOURCE_USERNAME=sks
 PG_DB_NAME=sks
 COMPOSE_DIR=/opt/sks
-OSS_BUCKET=               # 接对象存储后填，空则只本地保留
 RETAIN_DAYS=30
 ```
 

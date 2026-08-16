@@ -1,8 +1,8 @@
 # 本地调试运行指南（Java / Python / 前端 均在宿主跑，非 docker）
 
-> 本文档面向「我想在 IDE / 终端里直接跑工程、打断点调试」的场景。**应用代码（Java、Python、前端）全部在宿主机本地运行**，只有 Postgres 因为 pgvector 扩展麻烦，推荐仍用 docker 起一个裸 pg 容器（也可以本地装 pg+pgvector，见 §6）。
+> **阅读说明（四仓拆分后）**：`sks-server/`、`sks-ai/`、`sks-web/` 已不在本仓。下文路径指工作区里并列的三个服务仓；本仓只起 Postgres。生产部署见 `../../deploy/OPS.md`。
 >
-> 生产部署见 `../../deploy/OPS.md`；全 docker 联调见 git 历史。
+> 本文档面向「我想在 IDE / 终端里直接跑工程、打断点调试」的场景。**应用代码（Java、Python、前端）全部在宿主机本地运行**，只有 Postgres 因为 pgvector 扩展麻烦，推荐仍用 docker 起一个裸 pg 容器（也可以本地装 pg+pgvector，见 §6）。
 
 ## 0. 拓扑与端口
 
@@ -207,7 +207,7 @@ SELECT id, status, progress, updated_at FROM analyze_task ORDER BY id DESC;  # �
 
 > **发码报 `5003` 时先看这两条**——都不是代码问题，是配置回流：
 > 1. 日志是 `isv.INVALID_PARAMETERS 签名或者模版无效` → 查有没有人往 `../../.env` 加回 `ALIYUN_SMS_SIGN`。非 ASCII 值经 `../../.env` 会被 properties 加载器按 ISO-8859-1 读成乱码，而阿里云的报错完全不提编码。`AliyunSmsAuthClient.warnIfMangled` 会在日志里直接给出修法。
-> 2. 日志是 `[SMS-STUB]`（压根没发） → 查 AK 是否为空，或有人往 `../../.env` 加了空的 `ALIYUN_SMS_TEMPLATE_*=`（空值会覆盖 yml 默认值）。
+> 2. 日志是 `[SMS-SKIP]`（压根没发） → 查 AK 是否为空，或有人往 `../../.env` 加了空的 `ALIYUN_SMS_TEMPLATE_*=`（空值会覆盖 yml 默认值）。
 
 ### 8.3 管理端登录
 ```bash

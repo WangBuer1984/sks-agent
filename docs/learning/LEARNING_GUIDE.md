@@ -1,5 +1,7 @@
 # 随口说 sks-agent 技术栈学习指南（完整实操版）
 
+> **阅读说明（四仓拆分后）**：本文写于本仓还是 monorepo 的时候。Java / Python / 前端源码分别在并列的 `sks-server`、`sks-ai`、`sks-web`；动手命令请到对应仓目录执行。本仓 nginx 只反代，**不再托管**前端 `dist/`（静态由 sks-web 镜像 serve）。生产部署以 `deploy/` 为准，不要按本文的 `try_files` 改网关。
+>
 > 这份文档把整套技术栈拆成 9 个 Step，每个 Step 讲三件事：**它是什么 → 在仓库哪里看 → 怎么动手验证**。按顺序做，做完你就拥有了对整套系统的心智模型。
 >
 > 适用对象：对 Docker / Java / Python / 前端工具链都不熟的同学。每个命令都带预期输出，照着敲即可。
@@ -15,7 +17,7 @@
                               │                    │                     │
                               │                    └──── Postgres ────────┘
                               │                    (业务表 + 向量 + 检查点)
-                              └─ 同时托管前端静态文件
+                              └─ 反代 sks-web（静态在 web 镜像内）
 ```
 
 | 零件 | 工具 | 工具的作用 |
@@ -25,7 +27,7 @@
 | Java 依赖（spring 等） | Maven (mvnw) | 装/锁 Java 库 |
 | 数据库建表脚本 | Flyway | 给建表做版本控制 |
 | 前端构建/开发服务器 | Node + npm + vite | 跑/编译 React |
-| 流量分发、藏后端 | Nginx | 反向代理 + 托管静态文件 |
+| 流量分发、藏后端 | Nginx | 反向代理（`/api/` → Java，`/` → sks-web） |
 
 ---
 
@@ -241,30 +243,31 @@ npm run dev         # 起 dev server
 
 ---
 
-## Step 7 · Nginx：反向代理 + 托管静态文件
+## Step 7 · Nginx：反向代理
 
 ### 概念
 Nginx 在这套系统里干两件事：
 1. **反向代理**：浏览器只跟 nginx 说话，nginx 把 `/api/` 请求转给 Java。Java 不暴露公网，对外只有 nginx 一个入口。
    > "反向"代理 = 替**服务器**收请求（用户不知道后面有几个 Java）。正向代理替**你**上网（翻墙软件）。
-2. **托管静态文件**：前端的 `dist/` 给 nginx，nginx 直接把 HTML/JS/CSS 发给浏览器，不用经过 Java。
+2. **反代前端**：`/` 转给 sks-web 容器（SPA 的 `try_files` 在 web 镜像里，不在网关）。
 
 ### 在哪看（重点）
-**配置文件就一个：`../../deploy/nginx/nginx.conf`**。改代理只改这一个文件。核心三段：
+**配置文件：`../../deploy/nginx/nginx.conf`**（本地 80-only）。核心三段：
 
 ① 反代 Java：
 ```nginx
 location /api/ {
-    proxy_pass http://sks-server:8080/api/;   # /api/ 开头 → 转给 Java 容器
-    proxy_set_header X-Real-IP $remote_addr;  # 把用户真实 IP 透传给 Java
-    proxy_read_timeout 300s;                   # 外层超时
+    set $api_upstream sks-server:8080;
+    proxy_pass http://$api_upstream$request_uri;
+    proxy_read_timeout 300s;
 }
 ```
 
-② 托管前端 SPA：
+② 反代前端：
 ```nginx
 location / {
-    try_files $uri $uri/ /index.html;   # 找不到文件就回 index.html（React 前端路由）
+    set $web_upstream sks-web:80;
+    proxy_pass http://$web_upstream$request_uri;
 }
 ```
 
@@ -283,7 +286,7 @@ location = /50x.html { root /usr/share/nginx/html; }
 2. 重建：`docker compose --env-file .env up -d --build nginx`。
 3. 验证：`curl localhost/api/health`。
 
-> 本地纯调试时**不需要 nginx**——vite 的 dev server 自带 `/api → localhost:8080` 代理。nginx 是生产把 Java 藏起来、同时托管前端构建产物用的。
+> 本地纯调试时**不需要 nginx**——vite 的 dev server 自带 `/api → localhost:8080` 代理。nginx 是生产把 Java 藏起来、并把 `/` 反代到 sks-web 用的。
 
 ---
 

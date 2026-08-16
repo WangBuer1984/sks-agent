@@ -1,8 +1,8 @@
-# 上线 / 联调 Checklist — 随口说 MVP
+# 上线 / 联调 Checklist
 
-MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 前的联调准备清单：`.env` 占位 key 分类、外部/控制台配置、联调首检项、人工全链路验收。
+本文档是 go-live 前的联调准备清单：`.env` key 分类、外部/控制台配置、联调首检、人工全链路验收。
 
-> 本文档只列 key **名**与状态，不含任何密钥值。`.env` 是 gitignored 本地文件。
+> 只列 key **名**与状态，不含密钥。本地模板 `.env.example`，生产模板 `deploy/.env.prod.example`。§1 状态列是某次本地栈快照，不是当前 git HEAD 保证；上云以 prod 模板为准。
 
 ---
 
@@ -13,7 +13,7 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 - ✅ 5 容器全 healthy（postgres / sks-server / sks-ai / sks-web / nginx，sks-server/sks-ai/sks-web 为 GHCR 镜像，gateway 本地 build）
 - ✅ `GET /api/health`（经 nginx）→ `{"status":"UP"}`
 - ✅ `curl /50x.html` → 200（兜底页可达）
-- ✅ 注册流：send-code（SMS stub）→ 登录 → `isNew` 触发体验额度钩子 → `GET /api/user/me` balance=3
+- ✅ 注册流：send-code（未配 AK，码落库）→ 登录 → `isNew` 触发体验额度钩子 → `GET /api/user/me` balance=3
 - ✅ **§4.1 failure→refund 链**：generate→`5001 AI_FAILED`（GLM key 空）→ balance 恢复 → credit_ledger `trial 3 / generate debit -1 / refund 1`（净 3）→ script `failed` 1 行。「fail→refund 永不漏扣」+ I1 超时链（Python 240<Java 270<nginx 300）成立
 - ✅ **§4.3 precheck→不扣费**：`/api/analyze/account`→`5001`（TikHub key 空→precheck 失败）→ balance 不变 → analyze_task 0 行 → 无 analyze debit
 - ✅ **Admin seed + 管理端**：AdminSeedRunner 用 `ADMIN_SEED_PASSWORD` 哈希回填 `admin` 行 → `/api/admin/auth/login` `admin`/`<ADMIN_SEED_PASSWORD>` → token（adminId=2「站长本人」）
@@ -38,14 +38,10 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 | `TRIAL_CREDIT` | ✅ `3` | 注册体验额度 |
 | `ZHIPU_API_KEY` | ❌ 空 | **联调必填**：智谱 GLM。空则 script_gen/attribution/interview/card_gen 全 AI_FAILED |
 | `TIKHUB_API_KEY` | ❌ 空 | **联调必填**：TikHub。空则 precheck/hot_board/拆账号全 DataSourceError |
-| `ALIYUN_ACCESS_KEY_ID` | ❌ 空 | **联调必填**：阿里云主账号 AK。空则内容安全 fail-closed（**所有 UGC 被拦**）+ ASR + 余额查询 |
+| `ALIYUN_ACCESS_KEY_ID` | ❌ 空 | **联调必填**：阿里云主账号 AK。空则内容安全 fail-closed（**所有 UGC 被拦**）+ 验证码只落库不发。ASR 不走这把钥匙，见下面 `ALIYUN_ASR_KEY` |
 | `ALIYUN_ACCESS_KEY_SECRET` | ❌ 空 | **联调必填**：阿里云 SK |
-| ~~`ALIYUN_SMS_SIGN`~~ | — | **不再是 env 键**（连同端点与三个模板号）：全部写死在 sks-server `application.yml` 的 `sks.sms.*`，换签名/模板改那几行。短信「真发 or stub」的唯一闸门是上面 AK 两项 |
-| `SPRING_MAIL_HOST` | ❌ 空 | **联调必填**：SMTP 主机（告警邮件通道） |
-| `SPRING_MAIL_PORT` | 465 | SMTPS 端口（465 需 ssl.enable=true，已配） |
-| `SPRING_MAIL_USERNAME` | ❌ 空 | **联调必填**：SMTP 账号 |
-| `SPRING_MAIL_PASSWORD` | ❌ 空 | **联调必填**：SMTP 授权码（密钥，入 .env） |
-| `SKS_ALERT_ADMIN_EMAIL` | ❌ 空 | **联调必填**：站长告警收件邮箱 |
+| ~~`ALIYUN_SMS_SIGN`~~ | — | **不再是 env 键**（连同端点与三个模板号）：全部写死在 sks-server `application.yml` 的 `sks.sms.*`。验证码闸门是上面 AK 两项：配了真发，未配只落库 |
+| `SPRING_MAIL_HOST` / `USERNAME` / `PASSWORD` / `SKS_ALERT_ADMIN_EMAIL` | — | **告警邮件先不做**，可留空 |
 
 ### `.env` 缺失项（需新增行）
 
@@ -64,7 +60,7 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 > ~~`ALIYUN_SMS_TEMPLATE_LOGIN` / `_VERIFY_OLD` / `_BIND_NEW`~~ 已不是 `.env` 缺失项——三个模板号
 > （`100001` / `100002` / `100004`，字面码 `{"code":"<6>","min":"5"}`）连同签名与端点都写死在 sks-server
 > `application.yml` 的 `sks.sms.*`。**别为了「补齐」往 `.env` 加回这几行**：留一行空的 `XXX=` 会覆盖掉
-> yml 里的值（`${VAR:默认值}` 对「已定义但为空」用空值），短信静默退回 stub、不发也不报错。
+> yml 里的值（`${VAR:默认值}` 对「已定义但为空」用空值），验证码会只落库不发、也不报错。
 
 ---
 
@@ -72,10 +68,9 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 
 - [ ] **certbot Let's Encrypt**：真实域名签发证书到 `/etc/letsencrypt/live/<域名>/` + 续期 crontab；网关走 `deploy/nginx/nginx.https.conf` + `docker-compose.prod.yml`（sed 替换域名 + build arg `NGINX_CONF=nginx.https.conf`），`location /` 已是 `proxy_pass http://sks-web:80`、无 server 级 root/index；`certbot renew --dry-run` 通过。详见 `deploy/ALIYUN_DEPLOYMENT.md §2-3`
 - [ ] **UptimeRobot**（免费版）：监控 `https://<域名>/api/health` 期望 `{"status":"UP"}`，5 分钟间隔，宕机 email + 短信
-- [ ] **OSS/COS 对象存储**：`pg_backup.sh` 的 `OSS_BUCKET` 设值后启用真实上传（当前 env-gated 跳过）；备份保留 30 天
 - [ ] **`{{CONTACT_WECHAT}}` 替换**：部署的 `50x.html` 用 envsubst 替换为真实站长微信号（勿硬编码）
-- [ ] **pg_backup crontab**：宿主 `0 3 * * * bash deploy/backup/pg_backup.sh`
-- [ ] **restore-verify 上线前必做**：`bash deploy/backup/pg_restore_verify.sh <file>` 到 temp db `sks_verify` 全 7 表 count 通过（**额度账本不可丢**）
+- [ ] **pg_backup crontab**：宿主 `0 3 * * * bash deploy/backup/pg_backup.sh`（只本机 `/backup`，30 天保留）
+- [ ] **restore-verify 上线前必做**：`bash deploy/backup/pg_restore_verify.sh <file>` 到 temp db `sks_verify` 关键表 count 通过（**额度账本不可丢**）
 
 ---
 
@@ -84,8 +79,7 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 - [ ] **GLM 结构化输出**：`script_gen` 的 `{hook,body,cta}` 句结构 schema 被智谱正确返回（json_schema 支持）；`interview` summarize schema、`card_gen` schema 同理
 - [ ] **GLM thinking 转发**：`extra_body.thinking` 经 langchain-openai 透传到智谱（归因/归纳用 thinking-on 档）
 - [ ] **阿里云内容安全签名**：`content_safety` 的 ACS ROA 签名（HMAC）被正确接受（fail-closed 解除，正常 UGC 不再被拦）
-- [ ] **阿里云短信认证（DYPNS）**：`POST /api/auth/send-code` 真收验证码（字面码，`AliyunSmsAuthClient` DYPNS `SendSmsVerifyCode`；只需配 AK 两项，签名/模板已在 `application.yml`，见上表）
-- [ ] **告警邮件（SMTP）**：`SPRING_MAIL_*` + `SKS_ALERT_ADMIN_EMAIL` 配齐，`QuotaWatchJob` 触发告警邮件送达站长邮箱（`MailAlertNotifier`，465 + SSL）
+- [ ] **阿里云短信认证（DYPNS）**：`POST /api/auth/send-code` 真收验证码（只需配 AK 两项，签名/模板已在 `application.yml`）
 - [ ] **TikHub 响应契约**：`account_top_videos`/`precheck`/`hot_board` 的字段路径（`aweme_list`/`code==200`/`hot_list`）与防御性解析一致；`api.tikhub.dev` 可达
 - [ ] **TikHub download_url 可达性**：sks-ai 本地下载 TikHub 签名直链（反爬/CDN 过期）；视频号需 `decode_key` + `node` WASM decrypt
 - [ ] **sks-ai 镜像含 ffmpeg + nodejs**：`ffprobe`/`ffmpeg` 在 PATH（短 ASR pydub + Qwen 管线）；`node` 在 PATH（视频号 decode）。缺任一则长转写/校准语音会失败
@@ -95,7 +89,7 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 
 ---
 
-## 4. 人工全链路验收（配齐 key 后，按设计文档 §5.2 / OPS.md §7 手动过）
+## 4. 人工全链路验收（配齐 key 后，按 `OPS.md` §7 手动过）
 
 - [ ] 注册 → 体验单自动创建 + 余额 3 → 尾号搜索到用户 → 管理端开通 p50 → C 端余额 63（3+50+10）✅ 已验
 - [ ] 管理端补偿 +5 → 订单表 `order_type=compensate` → C 端余额增加，不触发首充赠送
@@ -120,7 +114,7 @@ docker compose pull --ignore-buildable && docker compose up -d
 curl -s localhost/api/health                          # {"status":"UP"}
 curl -s -o /dev/null -w '%{http_code}' localhost/50x.html  # 200
 
-# 注册（SMS stub，code 在 sms_code 表）
+# 注册（未配 AK 时码在 sms_code 表）
 curl -s -X POST localhost/api/auth/send-code -H 'Content-Type: application/json' -d '{"phone":"139xxxxxxxx"}'
 CODE=$(docker compose --env-file .env exec -T postgres psql -U sks sks -tAc \
   "SELECT code FROM sms_code WHERE phone='139xxxxxxxx' ORDER BY id DESC LIMIT 1")
