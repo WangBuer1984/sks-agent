@@ -70,7 +70,7 @@ MVP P0–P5 已 code-complete（`main` HEAD `e701f1a`）。本文档是 go-live 
 
 ## 2. 外部 / 控制台配置（无代码，详见 `deploy/OPS.md`）
 
-- [ ] **certbot Let's Encrypt**：真实域名签发证书 + 续期 crontab；nginx 443 server block 取消注释 + **443 块 `location /` 改 `proxy_pass http://sks-web:80`（同 80 块）+ 删 443 块 server 级 root/index**（见 gateway nginx.conf）；`certbot renew --dry-run` 通过
+- [ ] **certbot Let's Encrypt**：真实域名签发证书到 `/etc/letsencrypt/live/<域名>/` + 续期 crontab；网关走 `deploy/nginx/nginx.https.conf` + `docker-compose.prod.yml`（sed 替换域名 + build arg `NGINX_CONF=nginx.https.conf`），`location /` 已是 `proxy_pass http://sks-web:80`、无 server 级 root/index；`certbot renew --dry-run` 通过。详见 `deploy/ALIYUN_DEPLOYMENT.md §2-3`
 - [ ] **UptimeRobot**（免费版）：监控 `https://<域名>/api/health` 期望 `{"status":"UP"}`，5 分钟间隔，宕机 email + 短信
 - [ ] **OSS/COS 对象存储**：`pg_backup.sh` 的 `OSS_BUCKET` 设值后启用真实上传（当前 env-gated 跳过）；备份保留 30 天
 - [ ] **`{{CONTACT_WECHAT}}` 替换**：部署的 `50x.html` 用 envsubst 替换为真实站长微信号（勿硬编码）

@@ -9,4 +9,5 @@
 # 必须在这里显式放行——漏放行会在构建时立刻报错（COPY 找不到文件），不会静默出错。
 *
 !deploy/nginx/nginx.conf
+!deploy/nginx/nginx.https.conf
 !deploy/nginx/50x.html
