@@ -58,9 +58,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 |---|---|
 | 裸机一次性初始化 | `deploy/SERVER_INIT.md` |
 | 首次上云 | `deploy/ALIYUN_DEPLOYMENT.md` |
+| **日常发版（开发完怎么上线）** | `deploy/RELEASE.md` |
 | 发版脚本 | `deploy/deploy.sh` |
 | GHCR→ACR 同步 | `deploy/acr-sync.sh` |
-| 运维（HTTPS / ACR 发版 / 备份 / 告警） | `deploy/OPS.md` |
+| 运维（HTTPS / 备份 / 告警） | `deploy/OPS.md` |
 | 上线清单 | `deploy/GO_LIVE_CHECKLIST.md` |
 
 学习笔记在 `docs/learning/`（工具链与本地调试，不承载部署硬约束）。产品 PRD / 技术设计 / 契约在各服务仓，不在本仓。

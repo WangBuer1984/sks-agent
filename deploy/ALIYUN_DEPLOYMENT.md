@@ -2,7 +2,7 @@
 
 > 本文是**首次完整部署**的端到端 runbook：从配 `.env` → 签发证书 → 起栈 → HTTPS 网关 → 验收 → 监控/备份接线。
 > 前提：服务器已按 [`SERVER_INIT.md`](SERVER_INIT.md) 初始化完成（docker、compose v2.22+、ACR 登录、certbot、仓库已克隆）。
-> 后续每次发版部署走 [`deploy.sh`](deploy.sh)，本文只覆盖**首次**。
+> 后续每次发版走 [`RELEASE.md`](RELEASE.md)，本文只覆盖**首次**。
 > 2026-08-17 生产已通：`http://suikoushuo.com/` → 301；`https://suikoushuo.com/api/health` → `{"status":"UP"}`；裸域 / www / `/50x.html` 均为 200。
 
 ## 架构与端口

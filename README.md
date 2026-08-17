@@ -23,12 +23,7 @@ compose `depends_on` 自动保证：postgres → sks-server(等 pg healthy, Flyw
 
 ## 镜像 tag 更新流程（独立部署某服务）
 
-1. 三服务仓发 GHCR tag（例如 `v0.1.2`）。
-2. 本机 `./deploy/acr-sync.sh v0.1.2`（推到 ACR `suikoushuo`；Mac 强制 amd64）。
-3. 本仓改 `docker-compose.yml` 三处 image tag。
-4. ECS `git pull && ./deploy/deploy.sh sks-server`（或 `sks-ai` / `sks-web` / `all`）。`--no-deps` 已内置，不连带重启依赖。
-
-完整命令与 ACR 地址见 [`deploy/OPS.md`](deploy/OPS.md)「发版流水」。
+日常逐步命令见 [`deploy/RELEASE.md`](deploy/RELEASE.md)。不要默认把 compose 三处 tag 一起改——只 bump 实际打了 tag、并已 `acr-sync` 的那个服务。
 
 ## 验证
 
@@ -45,7 +40,7 @@ docker compose ps                              # 5 容器全 healthy
 |---|---|
 | 裸机一次性初始化 | [`deploy/SERVER_INIT.md`](deploy/SERVER_INIT.md) |
 | 首次上云 | [`deploy/ALIYUN_DEPLOYMENT.md`](deploy/ALIYUN_DEPLOYMENT.md) |
-| 后续发版 | `deploy/deploy.sh`；换 tag 先本机 `deploy/acr-sync.sh`，步骤见 [`deploy/OPS.md`](deploy/OPS.md) |
+| 后续发版 | [`deploy/RELEASE.md`](deploy/RELEASE.md) |
 | 运维（HTTPS / 备份 / 告警） | [`deploy/OPS.md`](deploy/OPS.md) |
 | 上线清单 | [`deploy/GO_LIVE_CHECKLIST.md`](deploy/GO_LIVE_CHECKLIST.md) |
 | 学习工具链 / 本地调试 | [`docs/learning/`](docs/learning/) |

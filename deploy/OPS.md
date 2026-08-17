@@ -7,6 +7,8 @@
 > 首次上云见 [`ALIYUN_DEPLOYMENT.md`](ALIYUN_DEPLOYMENT.md)；上线清单见 [`GO_LIVE_CHECKLIST.md`](GO_LIVE_CHECKLIST.md)。
 >
 > <b>首次起栈前置</b>：本机 `./deploy/acr-sync.sh v0.1.1` 后，ECS `.env` 填 `SKS_IMAGE_REGISTRY`（VPC），再 `./deploy/deploy.sh all`。三服务走 ACR；postgres / 网关基础镜像走 DaoCloud。卡在拉镜像：三服务见 `SERVER_INIT.md` §4。
+>
+> **日常发版（开发完怎么上线）走 [`RELEASE.md`](RELEASE.md)**，本文不再展开逐步命令。
 
 ## 镜像化部署模型
 
@@ -14,10 +16,10 @@
 
 | 场景 | 新（镜像化） |
 |---|---|
-| 新增 Flyway 迁移生效 | sks-server 仓发新 tag → CI 出 GHCR 镜像 → 本机 `./deploy/acr-sync.sh <tag>` → deploy 仓 bump `docker-compose.yml` 三处 tag → ECS `git pull && ./deploy/deploy.sh sks-server` |
-| 前端发版 | 同上，目标换成 `sks-web` |
+| 单服务发版 | 见 [`RELEASE.md`](RELEASE.md) §A：该仓打 tag → 本机 `acr-sync.sh <tag> <svc>` → **只 bump 该服务** compose tag → ECS `./deploy/deploy.sh <svc>` |
+| 三服务同一 tag | 见 [`RELEASE.md`](RELEASE.md) §B（三仓都要有该 tag） |
 | 重建/首次起栈 | 本机已 sync 当前 tag → ECS `./deploy/deploy.sh all` |
-| 回滚部署 | deploy 仓把 compose tag 改回上一版（ACR 上须已有该 tag）→ ECS `git pull && ./deploy/deploy.sh <svc>` |
+| 回滚部署 | 见 [`RELEASE.md`](RELEASE.md) §D |
 
 > **单服务重发不用连带重启 nginx。** 上面几行 `up -d <svc>` 会让该服务换个容器 IP。nginx 对
 > `proxy_pass` 里写死的主机名只在启动时解析一次并永久缓存，所以这原本会让网关一直 502、非重启
@@ -29,34 +31,9 @@
 
 ## 发版流水 — GHCR → ACR → ECS
 
-当前 compose 钉 **`v0.1.1`**。换版本（例如 `v0.1.2`）时：
+逐步命令、单服务 vs 三仓齐发、回滚，见 [`RELEASE.md`](RELEASE.md)。
 
-1. **确认 GHCR 三个仓都有该 tag**（`ghcr.io/wangbuer1984/sks-{server,ai,web}:<tag>`）。
-2. **本机同步到 ACR**（不要在 ECS 上拉 GHCR；Apple Silicon 脚本已强制 `linux/amd64`）：
-
-```bash
-docker login ghcr.io -u WangBuer1984
-docker login --username=dingtalk_bakexx \
-  crpi-7eu3mopdi4xg4ext.cn-beijing.personal.cr.aliyuncs.com
-./deploy/acr-sync.sh v0.1.2
-```
-
-3. **deploy 仓改 `docker-compose.yml` 三处** `:v0.1.1` → 新 tag（`acr-sync.sh` 的默认参数可一起改，传参即可不必改）。
-4. **ECS**（VPC 拉镜像，不计公网流量）：
-
-```bash
-# 首次或凭证过期
-docker login --username=dingtalk_bakexx \
-  crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com
-
-# .env 必须有（compose 插值）：
-# SKS_IMAGE_REGISTRY=crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com/suikoushuo
-
-git pull
-./deploy/deploy.sh all          # 或 ./deploy/deploy.sh sks-server
-```
-
-ACR 命名空间 `suikoushuo`（个人版北京）。公网 push / VPC pull 地址见 [`SERVER_INIT.md`](SERVER_INIT.md) §4。
+当前 compose 钉的版本看 `docker-compose.yml` 三处 `image:`（生产已上线时是 `v0.1.1`，之后按服务各自 bump）。ACR 地址见 [`SERVER_INIT.md`](SERVER_INIT.md) §4。
 
 ---
 
