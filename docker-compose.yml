@@ -73,7 +73,7 @@ services:
       start_period: 20s
 
   sks-web:
-    image: ${SKS_IMAGE_REGISTRY:-ghcr.io/wangbuer1984}/sks-web:v0.1.1
+    image: ${SKS_IMAGE_REGISTRY:-ghcr.io/wangbuer1984}/sks-web:v0.1.2
     container_name: sks-web
     restart: unless-stopped
     networks:

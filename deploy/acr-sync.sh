@@ -2,10 +2,10 @@
 # 把 GHCR 上的三服务镜像同步到阿里云个人版 ACR（北京），供国内 ECS 拉取。
 #
 # 不要在 ECS 上跑本脚本（GHCR 只有十几 kB/s）。在能较快访问 GitHub 的机器上：
-#   docker login ghcr.io -u WangBuer1984
 #   docker login --username=dingtalk_bakexx \
 #     crpi-7eu3mopdi4xg4ext.cn-beijing.personal.cr.aliyuncs.com
-#   ./deploy/acr-sync.sh            # 默认 v0.1.1，三服务，linux/amd64
+#   ./deploy/acr-sync.sh v0.1.2 sks-web
+# GHCR login 仅匿名 pull 401 时需要：docker login ghcr.io -u WangBuer1984
 #
 # 本机 push 走公网地址；ECS pull 走 VPC 地址（见 .env.prod.example SKS_IMAGE_REGISTRY）。
 set -euo pipefail
@@ -41,8 +41,15 @@ for svc in "${SERVICES[@]}"; do
 done
 
 echo
-echo "同步完成。ECS .env："
+echo "同步完成。push 时若出现 Not all multiplatform-content is present：可忽略（GHCR 本就只有 linux/amd64）。"
+echo "ECS .env："
 echo "  SKS_IMAGE_REGISTRY=$ACR_PULL_VPC"
 echo "ECS 登录（VPC，不计公网流量）："
 echo "  docker login --username=dingtalk_bakexx crpi-7eu3mopdi4xg4ext-vpc.cn-beijing.personal.cr.aliyuncs.com"
-echo "然后 ./deploy/deploy.sh all"
+if [[ "$TARGET" == "all" ]]; then
+  echo "然后：sks-agent 把 compose 三处 tag 都改成 $TAG 并 push；ECS：./deploy/deploy.sh all"
+else
+  echo "然后：sks-agent 只 bump docker-compose.yml 里 $TARGET 的 tag 为 $TAG 并 push"
+  echo "ECS：cd /opt/sks && git pull && ./deploy/deploy.sh $TARGET"
+  echo "不要跑 ./deploy/deploy.sh all（除非三服务都发了 $TAG）。"
+fi

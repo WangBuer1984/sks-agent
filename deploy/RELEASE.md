@@ -1,10 +1,32 @@
 # 日常发版（初始化完成之后）
 
-> 前提：ECS 已按 [`SERVER_INIT.md`](SERVER_INIT.md) 初始化，[`ALIYUN_DEPLOYMENT.md`](ALIYUN_DEPLOYMENT.md) 的首次上云已跑通。生产当前钉 **`v0.1.1`**（以 `docker-compose.yml` 里三处 `image:` 为准）。
+> 前提：ECS 已按 [`SERVER_INIT.md`](SERVER_INIT.md) 初始化，[`ALIYUN_DEPLOYMENT.md`](ALIYUN_DEPLOYMENT.md) 的首次上云已跑通。线上钉哪个版本，**只看** `docker-compose.yml` 三处 `image:`（可以 web 一个 tag、server/ai 另一个）。下文 `v0.1.2` 只是举例。
 >
 > 本文只讲**开发完怎么上线**。不要从这份文档去装 Docker、签证书、配 `.env`。
 
-## 流水线（记住这一条）
+## 以后每次都这样
+
+发 **sks-web / sks-server / sks-ai** 的代码，**每一次**都走这五步，没有「这次可以省略 bump」的例外：
+
+1. 那个仓 merge 到 `main` 后打新 `v*` tag 并 push（`git push origin main` **不会**出镜像）
+2. 等 GitHub Actions 的 `build-push` 变绿（GHCR `linux/amd64`）
+3. 本机 `./deploy/acr-sync.sh <tag> <svc>`（不要在 ECS 拉 GHCR；GHCR `docker login` 仅匿名 pull 401 时才需要）
+4. **bump**：`sks-agent` 的 `docker-compose.yml` **只改被发的那一行** tag，commit 并 push
+5. ECS：`cd /opt/sks && git pull && ./deploy/deploy.sh <svc>`
+
+不是三个服务每次都齐发：改了前端就只 tag / sync / bump / deploy `sks-web`。server、ai 同理。同时改了两个服务：各打各的 tag、各 sync 一次，compose 改两行。
+
+| 你改了什么 | 要不要五步 |
+|---|---|
+| 前端 / Java / Python 业务代码 | 要。只 bump **改了的那个**服务 |
+| 只改 `sks-agent` 网关 conf、`50x.html` | 不打镜像 tag、不 sync、不 bump；push agent 后 ECS `git pull && ./deploy/deploy.sh nginx` |
+| 只改 `sks-agent` 文档 | 不 bump；ECS `git pull` 即可 |
+
+不用 `:latest` 代替 bump：缓存会让你以为更新了其实没有，回滚也没有上一版 tag 可改回去。
+
+---
+
+## 流水线（和上一节同一件事）
 
 ```
 服务仓 git tag v*  →  GitHub Actions 推 GHCR（linux/amd64）
@@ -13,9 +35,25 @@
         →  ECS git pull && ./deploy/deploy.sh <svc>
 ```
 
-`git push origin main` **不会出镜像**。三服务 CI 只有 `v*` tag 才 `build-push`。
-
 仓库根：本机服务仓在 `/Users/rick/work/sks-{web,server,ai}`；deploy 仓 `/Users/rick/work/sks-agent`；ECS 仓根 `/opt/sks`。
+
+## 为什么要 bump compose
+
+ECS **不编译** 你刚 push 的 Git。`deploy.sh sks-web` 只做一件事：按 `docker-compose.yml` 里写死的名字去 ACR `pull`，再起容器。
+
+| 步骤 | 实际效果 |
+|---|---|
+| 服务仓打 `v0.1.2` | GHCR 多了一份**新**镜像，旧 `v0.1.1` 还在 |
+| 本机 `acr-sync` | ACR 里也多了这份 `v0.1.2`，**线上容器没换** |
+| **bump**（改 compose 那一行并 push） | 告诉 ECS：下次 pull 用 `v0.1.2` 而不是 `v0.1.1` |
+| ECS `deploy.sh sks-web` | 这时才会把正在跑的容器换成新镜像 |
+
+不同步就 bump：ECS pull 失败（ACR 没有该 tag）。  
+只 sync 不 bump：`deploy.sh` 仍去拉 compose 里的旧 tag，新功能不会上线。
+
+不用 `:latest`：Docker 常以为本地已是 latest 而不拉；回滚也没有「改回上一版 tag」可写。
+
+只改网关 conf / `50x.html` **不用 bump**（没有业务镜像），见 §C。
 
 ---
 
@@ -64,25 +102,32 @@ tag 打错了不要复用同一个名字改内容；再打 `v0.1.3`。
 
 ```bash
 cd /Users/rick/work/sks-agent
-docker login ghcr.io -u WangBuer1984
+# GHCR：镜像若已公开、或本机以前 login 过，可跳过。pull 报 401 再登：
+# docker login ghcr.io -u WangBuer1984
 docker login --username=dingtalk_bakexx \
   crpi-7eu3mopdi4xg4ext.cn-beijing.personal.cr.aliyuncs.com
 ./deploy/acr-sync.sh v0.1.2 sks-web
 ```
 
+成功时常见一行 Info：`Not all multiplatform-content is present and only the available single-platform image was pushed`——**可忽略**。CI 只打 `linux/amd64`，脚本也按这个平台推，ECS 要的就是这份。
+
+脚本结尾会告诉你下一步（单服务是 `deploy.sh sks-web`，不是 `all`）。若仍看到旧版脚本印 `然后 ./deploy/deploy.sh all`，**不要照做**；以本文表格为准。
+
 ACR 公网（本机 push）：`crpi-7eu3mopdi4xg4ext.cn-beijing.personal.cr.aliyuncs.com/suikoushuo`  
 ECS VPC pull：`.env` 里的 `SKS_IMAGE_REGISTRY`（已在首次部署配好）。
 
-### 4. deploy 仓只 bump 这一处 tag
+### 4. bump：只改被发的那一行
 
-改 `docker-compose.yml` 对应行，例如：
+`acr-sync` 只是把镜像放到 ACR。不改 compose，ECS 下次仍 pull `v0.1.1`。
+
+只改 `docker-compose.yml` 里**这一个服务**，例如这次前端：
 
 ```yaml
 sks-web:
   image: ${SKS_IMAGE_REGISTRY:-ghcr.io/wangbuer1984}/sks-web:v0.1.2
 ```
 
-`sks-server` / `sks-ai` 仍留 `v0.1.1`。提交并 `git push origin main`（sks-agent）。
+`sks-server` / `sks-ai` 仍留现在的 tag（例如 `v0.1.1`）。提交并 `git push origin main`（sks-agent）。ECS `git pull` 之后才能拿到这行新指针。
 
 ### 5. ECS 拉起
 
@@ -180,6 +225,9 @@ ACR 上必须已经有旧 tag（`v0.1.1` 已在，可回）。
 | 本地/ECS `docker compose up --build` 编三服务 | 生产三服务只引用镜像；只有 nginx 本地 build |
 | `certbot --nginx` / 裸 `certbot renew` | 80 被 `sks-nginx` 占用；续期用 `renew-cert.sh` |
 | 复用已推过的 tag 改镜像内容 | GHCR/ACR 缓存，ECS 可能拉到旧层 |
+| 觉得「这次特殊」想跳过 bump / 改用 `:latest` | 线上还跑旧镜像，或缓存导致假更新；回滚也没指针 |
+| 只 `acr-sync`、compose 不改就 `deploy.sh` | 线上还在 pull 旧 tag，新镜像白拷了一份 |
+| 单服务 sync 完照脚本旧结尾跑 `deploy.sh all` | 会去 pull 没有新 tag 的 server/ai；用表里的 `deploy.sh <svc>` |
 
 ---
 
